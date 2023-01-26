@@ -97,55 +97,145 @@
 # brew install clamav
 #      freshclam
 
-if [ -z "$1" ] ||
-  [ "$1" == "-h" ] ||
-  [ "$1" == "/?" ]; then
+
+#region Debugging/Output
+
+
+YELLOW="\e[33m"  # Warnings
+BLUE="\e[94m"    # Verbose
+ENDCOLOR="\e[0m" # Reset
+
+
+function verbose() {
+  # Used to enhance information to the user
+  if [[ -n $VERBOSE ]]; then
+    echo -en "$BLUE"
+    echo -n "[*] $1" 
+    echo -e "$ENDCOLOR"
+  fi
+}
+
+function warn() {
+  # Used to warning the user about an action that errored/failed
+  echo -en "${YELLOW}"
+  echo -n "[!] $1"  
+  echo -e "${ENDCOLOR}"
+}
+
+function info() {
+  # Generic messages to the user
+  echo -en "\e[1m"
+  echo -n "[+] $1"
+  echo -e "${ENDCOLOR}"
+}
+
+#endregion
+
+function show_help() {
   echo
   echo 'grep_all.sh - Security Review Script'
   echo 'WARNING: THIS SCRIPT MAY DAMAGE YOUR COMPUTER. RUN IT AT YOUR OWN RISK.'
-  echo 'Syntax: grep_all.sh [-r] <output directory>'
-  echo 'Run grep_all from the directory whose contents you wish to audit.'
-  echo 'An output directory for all of the results must be specified, for example:'
-  echo '$ cd /mnt/project/src/code'
-  echo '$ grep_all.sh ~/my_security_review/output'
-  echo 'This script can take a long time to run. If you terminate the script, then rerun with the same arguments, the commands will generally pick up where they left off, although you will lose the end of the output from the command that got cut short.'
-  echo 'If you have ripgrep (rg) installed, specify -r or --ripgrep to use rg instead of grep.'
+  echo 
+  echo 'USAGE'
+  echo '  $ grep_all.sh [-v] [-r] <output directory> [code directory]'
+  echo 
+  echo '      -v/--verbose      :   (Optional) Output verbose messages'
+  echo '      -r/--ripgrep      :   (Optional) Use rg instead of grep to perform regex matches'
+  echo '      <output directory>:   The location to write the results'
+  echo '      [code directory]  :   (Optional) The location of code to audit'
   echo
-  exit
-fi
+  echo '  To grep_all (audit) the current directory, just specify the output path:'
+  echo '    $ cd /mnt/project/src/code'
+  echo '    $ grep_all.sh ~/path/to/output'
+  echo 
+  echo '  To audit a specific directory, provide both the output path and code path:'
+  echo '    $ grep_all.sh ~/path/to/output ~/path/to/code'
+  echo ''
+  echo '  If you have ripgrep (rg) installed, specify -r or --ripgrep to get a performance improvement'
+  echo '    $ grep_all.sh -r ~/path/to/output'
+  echo 
+  echo 'REMARKS'
+  echo '  This script can take a long time to run. If you terminate the script, then rerun with the same arguments.'
+  echo '  If it is terminated early, you may lose the output from the command(s) currently running.'
+  echo '  However, the script will generally pick up where they left off.'
+  echo
+  
+}
 
-# determine whether to use ripgrep
-do_ripgrep="false"
-if [ "$1" == "-r" ] || [ "$1" == "--ripgrep" ]; then
-  if [ -z "$(which rg)" ]; then
-    echo "Ripgrep requested but not found. Rerun without '-r'/'--ripgrep' or install ripgrep then run again."
-    exit
-  fi
-  echo "Ripgrep selected"
-  do_ripgrep="true"
+if [ "$1" == "-v" ] || [ "$1" == "--verbose" ] ; then
+  VERBOSE=1
   shift
 fi
 
-out=$1
+if [ "$1" == "-d" ] || [ "$1" == "--debug" ] ; then
+  DEBUG=1
+  shift
+fi
+
+#region Parse CLI arguments
+# determine whether to use ripgrep
+do_ripgrep="false"
+if [ "$1" == "-r" ] || [ "$1" == "--ripgrep" ] ; then
+  if [ -z "$(which rg)" ] ; then
+    warn "Ripgrep requested but not found. Rerun without '-r'/'--ripgrep' or install ripgrep then run again."
+    exit
+  else
+    verbose "Ripgrep mode selected"
+    do_ripgrep="true"
+    shift
+  fi
+fi
+
+if [ -z "$1" ] || [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
+  verbose "Help parameter detected"
+  show_help
+  exit
+fi
+
+# Track relative and absolute paths, as we will be CDing into the code directory.
+out_original=$1
+out=$(realpath $out_original)
 current_dir=$(pwd)
 scriptDir=$(dirname "$0")
 
-# Escaping greps: the following chars need escaping: (){}?+ and space
-domainName='([a-zA-Z0-9-]{1,80}\.)+(com|uk|io|trust|org|net|mil|ws)'
-emailAtDomain='[.\-_a-zA-Z0-9]{1,80}\@'$domainName
+# Switch to code dir if provided
+if  [ -n "$2" ] ; then 
+  if [ ! -d "$2" ] ; then
+    warn "Directory '$2' does not exist."
+    show_help
+    exit
+  fi
+  cd $2
+  current_dir=$(pwd)
+fi
+#endregion
+
+verbose "\$out => $out"
+verbose "\$current_dir => $current_dir"
+verbose "\$scriptDir => $scriptDir"
+
+info "Writing to output directory: $out"
+if [ ! -e "$out" ]; then
+  mkdir -p "$out"
+fi
+
+info "Reading from: $current_dir"
+
+#region Escaping greps: the following chars need escaping: (){}?+ and space
+# Define format first, putting word boundaries on the actual lookups
+domainNameFormat='(([A-Z0-9][A-Z0-9-]{1,80}\.){1,}(aero|arpa|asia|biz|cat|com|coop|edu|gov|inet|jobs|mil|mobi|museum|org|ru|pro|tel|travel|u[ks]|xxx|)'
+
+# Word boundaries will speed up matches signficantly.
+domainName="\b${domainNameFormat}\b"
+emailAtDomain="\b([.\-_a-zA-Z0-9]{1,80}\@${domainNameFormat})\b"
+#endregion
 
 # secret grep-fu; restrict to ascii for performance
 # Also, USE GNU GREP (it's 10x faster than OSX/BSD grep)
 LC_ALL=C
 LANG=C
-APPLE_FILES='--include=*.swift --include=*.m --include=*.plist --include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
-C_FILES='--include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
-CS_FILES='--include=*.cs'
-GO_FILES='--include=*.go'
-RUBY_FILES='--include=*.rb'
-PHP_FILES='--include=*.php --include=*.php3 --include=*.php4 --include=*.php5 --include=*.phtml --include=*.inc'
-BannedFunctions=('_alloca' '_ftcscat' '_ftcscpy' '_getts' '_gettws' '_i64toa' '_i64tow' '_itoa' '_itow' '_makepath' '_mbccat' '_mbccpy' '_mbscat' '_mbscpy' '_mbslen' '_mbsnbcat' '_mbsnbcpy' '_mbsncat' '_mbsncpy' '_mbstok' '_mbstrlen' '_sntscanf' '_splitpath' '_stprintf' '_stscanf' '_tccat' '_tccpy' '_tcscat' '_tcscpy' '_tcsncat' '_tcsncpy' '_tcstok' '_tmakepath' '_tscanf' '_tsplitpath' '_ui64toa' '_ui64tot' '_ui64tow' '_ultoa' '_ultot' '_ultow' '_vstprintf' '_wmakepath' '_wsplitpath' 'alloca' 'ChangeWindowMessageFilter' 'CharToOem' 'CharToOemA' 'CharToOemBuffA' 'CharToOemBuffW' 'CharToOemW' 'CopyMemory' 'gets' 'IsBadCodePtr' 'IsBadHugeReadPtr' 'IsBadHugeWritePtr' 'IsBadReadPtr' 'IsBadStringPtr' 'IsBadWritePtr' 'lstrcat' 'lstrcatA' 'lstrcatn' 'lstrcatnA' 'lstrcatnW' 'lstrcatW' 'lstrcpy' 'lstrcpyA' 'lstrcpyn' 'lstrcpynA' 'lstrcpynW' 'lstrcpyW' 'lstrlen' 'lstrncat' 'makepath' 'memcpy' 'memcpy' 'OemToChar' 'OemToCharA' 'OemToCharW' 'RtlCopyMemory' 'scanf' 'snscanf' 'snwscanf' 'sprintf' 'sprintfA' 'sscanf' 'strcat' 'strcat' 'StrCat' 'strcatA' 'StrCatA' 'StrCatBuff' 'StrCatBuffA' 'StrCatBuffW' 'StrCatChainW' 'StrCatN' 'StrCatNA' 'StrCatNW' 'strcatW' 'StrCatW' 'strcpy' 'StrCpy' 'strcpyA' 'StrCpyA' 'StrCpyN' 'StrCpyNA' 'strcpynA' 'StrCpyNW' 'strcpyW' 'StrCpyW' 'strlen' 'StrLen' 'strncat' 'StrNCat' 'StrNCatA' 'StrNCatW' 'strncpy' 'StrNCpy' 'StrNCpyA' 'StrNCpyW' 'strtok' 'swprintf' 'swscanf' 'vsnprintf' 'vsprintf' 'vswprintf' 'wcscat' 'wcscpy' 'wcslen' 'wcsncat' 'wcsncpy' 'wcstok' 'wmemcpy' 'wnsprintf' 'wnsprintfA' 'wnsprintfW' 'wscanf' 'wsprintf' 'wsprintf' 'wsprintfA' 'wvnsprintf' 'wvnsprintfA' 'wvnsprintfW' 'wvsprintf' 'wvsprintfA' 'wvsprintfW')
 
+#region Library functions - e.g. do_xxxx, rm_if_xxxxx
 function rm_if_empty() {
   test -s "${1}" || rm "${1}"
 }
@@ -156,7 +246,7 @@ function rm_if_present() {
 function grep_filter() {
   #cat
   #grep -vi '\.xml' | grep -vi '\.js' | grep -vi '\.css' |
-  grep -Pvi --binary-files=text '(binary file|/third_party/|/test/|example|/node_modules/|/vendor/|/\.svn/)'
+  grep -Pvi --binary-files=text '(binary file|/third_party/|/test/|example|/node_modules/|/packages/|/obj/|/bin/|/vendor/|/\.svn/)'
 }
 
 # do_grep <expression> <output-file> <grep-options> <filter-cmd>
@@ -170,11 +260,44 @@ function do_plaingrep() {
   fi
 
   if [ -z "$4" ]; then
-    echo grep "$grep_opts $1 $(pwd) | grep_filter > $out/$2"
+    echo "grep $grep_opts $1 $(pwd) | grep_filter > $out_original/$2"
     grep $grep_opts "$1" "$(pwd)" | grep_filter >"$out/$2"
   else
-    echo grep "$grep_opts $1 $(pwd) | grep_filter | $4 > $out/$2"
-    grep $grep_opts "$1" "$(pwd)" | grep_filter | sh -c "$4" >"$out/$2"
+    echo "grep $grep_opts $1 $(pwd) | grep_filter | $4 > $out_original/$2"
+    grep $grep_opts "$1" "$(pwd)" | grep_filter | sh -c "$4" > "$out/$2"
+  fi
+
+  rm_if_empty "$out/$2"
+}
+  
+# Takes a filelist, greps all files listed within
+function do_filelist_grep() {
+  # do_filelist_grep <expression> <output-file> <input-filelist> <grep-opts>
+
+  grep_opts="-Prn"
+  
+  if [ -n "$4" ]; then
+    grep_opts="${grep_opts} $4"
+  fi
+
+  # Skip checks if a file doesn't exist
+  if [ ! -s "$out/$3" ]; then   
+    verbose "do_filelist_grep: Skipping $3 : No files "
+    return
+  fi
+
+  echo "cat $out_original/$3 | xargs grep ${grep_opts} '$1' >> $2"
+  
+  if [ ! -s "$out/$2" ]; then
+    cat "$out/$3" | xargs -d '\n' grep $grep_opts "$1" > $out/$2 
+
+    # DEBUG : File may not be generated from output, so cater output for non-existent files
+    if [ -n $VERBOSE ]; then
+      if [ -s "$out/$2" ]; then 
+          verbose "do_filelist_grep: $2 >> $(cat $out_original/$2 | wc -l) result(s)"
+      else 
+          verbose "do_filelist_grep: $2 >> 0 result(s)"
+      fi
   fi
 
   rm_if_empty "$out/$2"
@@ -193,10 +316,10 @@ function do_ripgrep() {
   rg_args+=("$1" "$(pwd)")
 
   if [ -z "$4" ]; then
-    echo "rg ${rg_args[@]} | grep_filter > $out/$2"
+    echo "rg ${rg_args[@]} | grep_filter > $out_original/$2"
     rg "${rg_args[@]}" | grep_filter >"$out/$2"
   else
-    echo "rg ${rg_args[@]} | grep_filter | sh -c $4 > $out/$2"
+    echo "rg ${rg_args[@]} | grep_filter | sh -c $4 > $out_original/$2"
     rg "${rg_args[@]}" | grep_filter | sh -c "$4" >"$out/$2"
   fi
 
@@ -210,7 +333,7 @@ function do_banned_grep() {
 
 function do_plaingrep_return_uniq_token() {
   if [ ! -e "$out/$2" ]; then
-    echo "grep -Pra $1 $(pwd) | grep_filter | grep -Poa $1 | sort -u > $out/$2"
+    echo "grep -Pra $1 $(pwd) | grep_filter | grep -Poa $1 | sort -u > $out_original/$2"
     grep -Pra "$1" "$(pwd)" | grep_filter | grep -Poa "$1" | sort -u >"$out/$2"
     rm_if_empty "$out/$2"
   fi
@@ -218,7 +341,7 @@ function do_plaingrep_return_uniq_token() {
 
 function do_ripgrep_return_uniq_token() {
   if [ ! -e "$out/$2" ]; then
-    echo "rg --no-heading -Pa $1 | grep_filter | grep -Po $1 | sort -u > $out/$2"
+    echo "rg --no-heading -Pa $1 | grep_filter | grep -Po $1 | sort -u > $out_original/$2"
     rg -Pa "$1" | grep_filter | grep --binary-files=text -Po "$1" | sort -u >"$out/$2"
     rm_if_empty "$out/$2"
   fi
@@ -248,23 +371,23 @@ function join_array() {
 function do_fast_banned_grep() {
   combinedfile="${out}/banned_combined_results.txt"
 
-  echo "grep for all banned functions to combined results"
+  info "grep for all banned functions to combined results"
   pattern='[\W^]('"$(join_array '|' ${BannedFunctions[@]})"')\s*\(.{0,99}$'
   if [ "$do_ripgrep" == "true" ]; then
     grep_args="$(sed 's|--include=\(\S*\)|-g \1|g' <<<$C_FILES)"
     grep_args="$(sed 's|--exclude=\(\S*\)|-g !\1|g' <<<$grep_args)"
     IFS=' ' read -ra args_array <<<"${grep_args}"
     grep_args=(-Pn --no-heading "${args_array[@]}" "${pattern}" "$(pwd)")
-    echo "rg ${grep_args[@]}"
-    rg "${grep_args[@]}" | grep_filter >"${combinedfile}"
+    verbose "rg ${grep_args[@]} | grep_filter > ${combinedfile}"
+    rg "${grep_args[@]}" | grep_filter > "${combinedfile}"
   else
     IFS=' ' read -ra args_array <<<"${C_FILES}"
     grep_args=(-Prn "${args_array[@]}" "${pattern}" "$(pwd)")
-    echo "rg ${grep_args[@]}"
-    grep "${grep_args[@]}" | grep_filter >"${combinedfile}"
+    verbose "${grep_args[@]}" | grep_filter > ${combinedfile}"
+    grep "${grep_args[@]}" | grep_filter > ${combinedfile}"
   fi
 
-  echo "splitting grep results"
+  info "splitting grep results"
   for fn in "${BannedFunctions[@]}"; do
     grep "-P" '[\W^]'"${fn}"'\s*\(.{0,99}$' "${combinedfile}" >"${out}/banned_${fn}.txt"
     rm_if_empty "${out}/banned_${fn}.txt"
@@ -272,14 +395,10 @@ function do_fast_banned_grep() {
   rm "${combinedfile}"
 }
 
-# TODO: Check dependencies exist and nag.
+#endregion
 
-echo "# Writing to output directory: $out"
-if [ ! -e "$out" ]; then
-  mkdir -p "$out"
-fi
 
-echo Starting Greps
+info Starting Greps
 start_time=$(date +%s)
 
 do_exec 'echo `date`' 'basic_begin.txt'
@@ -347,7 +466,7 @@ if true; then
   # nsp check ./server/ --reporter summary
   # find . -name package.json | while read i; do dirname $i; done | while read j; do echo PROJECT: $j; nsp check $j --reporter json | jq -j '.[] | .title, "-", .cvss_score, "\n"'; done
   #.id, "\t", .title, "\t", .advisory, "\t", .path
-  do_exec 'find . -name package.json | while read i; do dirname $i; done | while read j; do echo PROJECT: $j; nsp check $j --reporter summary; done' 'tool_nsp.txt'
+  do_exec 'find . -name package.json | while read i; do dirname $i; done | while read j; do echo PROJECT: $j; cd $j; npm audit; done' 'tool_npm.txt'
 
   # Brakeman
   for d in $(find . | grep config/routes.rb | sed -E 's/config\/routes\.rb//'); do
@@ -368,18 +487,215 @@ if true; then
 
 fi
 
-### New rules, uncategorised
 
-do_grep '# <?= $token ?>.{0,200}$' 'bug_php_xss_interp.txt'
-do_grep '<\w+>.*\$\w+.{0,200}$' 'bug_php_xss_tag.txt'
+#region File List Grepping initialization
+
+## Find the specific file types, then run the rules specifically for those
+## Can be run in parallel, as there is no FS recursion, so very fast!
+
+# Filter criteria (used by find . )
+APPLE_FILELIST_FILTER="'.*\.(swift|m|plist|c|h|cpp|cxx|cc|C|hpp)'"
+C_FILELIST_FILTER="'.*\.(c|h|cpp|cxx|cc|C|hpp)'"
+CS_FILELIST_FILTER="'.*\.cs'"
+GO_FILELIST_FILTER="'.*\.go'"
+JAVA_FILELIST_FILTER="'.*\.java'"
+PHP_FILELIST_FILTER="'.*\.(php|php3|php4|php5|phtml|inc)'"
+PYTHON_FILELIST_FILTER="'.*\.py'"
+RUBY_FILELIST_FILTER="'.*\.rb'"
+
+# Output files for filtering
+APPLE_FILELIST='info_apple_filelist.txt'
+C_FILELIST='info_c_filelist.txt' 
+CS_FILELIST='info_cs_filelist.txt'
+GO_FILELIST='info_go_filelist.txt'
+JAVA_FILELIST='info_java_filelist.txt'
+PHP_FILELIST='info_php_filelist.txt'
+PYTHON_FILELIST='info_py_filelist.txt'
+RUBY_FILELIST='info_ruby_filelist.txt'
+
+#endregion
+
+## Specific includes for normal grepping
+APPLE_FILES='--include=*.swift --include=*.m --include=*.plist --include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
+C_FILES='--include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
+CS_FILES='--include=*.cs'
+GO_FILES='--include=*.go'
+PHP_FILES='--include=*.php --include=*.php3 --include=*.php4 --include=*.php5 --include=*.phtml --include=*.inc'
+JAVA_FILES='--include=*.java'
+PYTHON_FILES='--include=*.py'
+RUBY_FILES='--include=*.rb'
+
+BannedFunctions=('_alloca' '_ftcscat' '_ftcscpy' '_getts' '_gettws' '_i64toa' '_i64tow' '_itoa' '_itow' '_makepath' '_mbccat' '_mbccpy' '_mbscat' '_mbscpy' '_mbslen' '_mbsnbcat' '_mbsnbcpy' '_mbsncat' '_mbsncpy' '_mbstok' '_mbstrlen' '_sntscanf' '_splitpath' '_stprintf' '_stscanf' '_tccat' '_tccpy' '_tcscat' '_tcscpy' '_tcsncat' '_tcsncpy' '_tcstok' '_tmakepath' '_tscanf' '_tsplitpath' '_ui64toa' '_ui64tot' '_ui64tow' '_ultoa' '_ultot' '_ultow' '_vstprintf' '_wmakepath' '_wsplitpath' 'alloca' 'ChangeWindowMessageFilter' 'CharToOem' 'CharToOemA' 'CharToOemBuffA' 'CharToOemBuffW' 'CharToOemW' 'CopyMemory' 'gets' 'IsBadCodePtr' 'IsBadHugeReadPtr' 'IsBadHugeWritePtr' 'IsBadReadPtr' 'IsBadStringPtr' 'IsBadWritePtr' 'lstrcat' 'lstrcatA' 'lstrcatn' 'lstrcatnA' 'lstrcatnW' 'lstrcatW' 'lstrcpy' 'lstrcpyA' 'lstrcpyn' 'lstrcpynA' 'lstrcpynW' 'lstrcpyW' 'lstrlen' 'lstrncat' 'makepath' 'memcpy' 'memcpy' 'OemToChar' 'OemToCharA' 'OemToCharW' 'RtlCopyMemory' 'scanf' 'snscanf' 'snwscanf' 'sprintf' 'sprintfA' 'sscanf' 'strcat' 'strcat' 'StrCat' 'strcatA' 'StrCatA' 'StrCatBuff' 'StrCatBuffA' 'StrCatBuffW' 'StrCatChainW' 'StrCatN' 'StrCatNA' 'StrCatNW' 'strcatW' 'StrCatW' 'strcpy' 'StrCpy' 'strcpyA' 'StrCpyA' 'StrCpyN' 'StrCpyNA' 'strcpynA' 'StrCpyNW' 'strcpyW' 'StrCpyW' 'strlen' 'StrLen' 'strncat' 'StrNCat' 'StrNCatA' 'StrNCatW' 'strncpy' 'StrNCpy' 'StrNCpyA' 'StrNCpyW' 'strtok' 'swprintf' 'swscanf' 'vsnprintf' 'vsprintf' 'vswprintf' 'wcscat' 'wcscpy' 'wcslen' 'wcsncat' 'wcsncpy' 'wcstok' 'wmemcpy' 'wnsprintf' 'wnsprintfA' 'wnsprintfW' 'wscanf' 'wsprintf' 'wsprintf' 'wsprintfA' 'wvnsprintf' 'wvnsprintfA' 'wvnsprintfW' 'wvsprintf' 'wvsprintfA' 'wvsprintfW')
+
+
+
+# Filter relevant files 
+do_exec "find `pwd` -iregex $APPLE_FILELIST_FILTER" "$APPLE_FILELIST"
+do_exec "find `pwd` -iregex $C_FILELIST_FILTER" "$C_FILELIST"
+do_exec "find `pwd` -iregex ${CS_FILELIST_FILTER}" "$CS_FILELIST"
+do_exec "find `pwd` -iregex $GO_FILELIST_FILTER" "$GO_FILELIST" 
+do_exec "find `pwd` -iregex $JAVA_FILELIST_FILTER" "$JAVA_FILELIST"
+do_exec "find `pwd` -iregex $PHP_FILELIST_FILTER" "$PHP_FILELIST" 
+do_exec "find `pwd` -iregex $PYTHON_FILELIST_FILTER" "$PYTHON_FILELIST" 
+do_exec "find `pwd` -iregex $RUBY_FILELIST_FILTER" "$RUBY_FILELIST" 
+
+## Below statements are all run in parallel, as grepping will be extremely fast.
+
+# Apple
+echo 
+info "Starting Apple specific checks"
+do_filelist_grep 'KeychainItem.{0,200}$' 'info_apple_keychain_item.txt' "$APPLE_FILELIST" 
+do_filelist_grep 'kSecValueData.{0,200}$' 'info_apple_ksecvaluedata.txt' "$APPLE_FILELIST"
+do_filelist_grep 'SecItemUpdate.{0,200}$' 'info_apple_secitemupdate.txt' "$APPLE_FILELIST"
+
+# PHP 
+echo 
+info "Starting PHP specific checks"
+do_filelist_grep '\.\s+\$_GET.{0,99}$' 'bug_php_get_param_in_string.txt' "$PHP_FILELIST"
+do_filelist_grep '\.\s+\$_POST.{0,99}$' 'bug_php_post_param_in_string.txt' "$PHP_FILELIST"
+do_filelist_grep '\.\s+\$_COOKIE.{0,99}$' 'bug_php_cookie_param_in_string.txt' "$PHP_FILELIST"
+do_filelist_grep '\.\s+\$_REQUEST.{0,99}$' 'bug_php_request_param_in_string.txt' "$PHP_FILELIST"
+do_filelist_grep 'create_function.{0,99}$' 'bug_php_create_function.txt' "$PHP_FILELIST"
+do_filelist_grep 'filter_input.{0,99}$' 'bug_php_filter_input.txt' "$PHP_FILELIST"
+do_filelist_grep '(include|require).{0,99}\$.{0,99}$' 'bug_php_var_include.txt' "$PHP_FILELIST"
+do_filelist_grep '\$\w+\(.{0,99}$' 'bug_php_var_func.txt' "$PHP_FILELIST"
+do_filelist_grep 'order\s+by.{0,200}'\''.{0,200}\$.{0,200}$' 'bug_php_order_by.txt' "$PHP_FILELIST"
+do_filelist_grep '\W(mt_rand|mt_srand|lcg_value|rand|uniqid|microtime|shuffle)\W.{0,99}$' 'bug_php_bad_rand.txt' "$PHP_FILELIST"
+do_filelist_grep '\W(openssl_random_pseudo_bytes|random_int|random_bytes)\W.{0,99}$' 'info_php_good_rand.txt' "$PHP_FILELIST"
+do_filelist_grep 'assert\(\s*"?\$\w*"?\s*\).{0,99}$' 'bug_php_rce_assert.txt' "$PHP_FILELIST"
+do_filelist_grep 'eval\(\s*"?\$\w*"?\s*\).{0,99}$' 'bug_php_rce_eval.txt' "$PHP_FILELIST"
+do_filelist_grep '_protect_identifiers.*FALSE.{0,99}$' 'bug_php_sqli_codeigniter_disable_escape.txt' "$PHP_FILELIST"
+do_filelist_grep 'select\(.*FALSE.{0,99}$' 'bug_php_sqli_codeigniter_select_disable_escape.txt' "$PHP_FILELIST"
+do_filelist_grep 'CURLOPT_SSL_VERIFYHOST\s*[=>,]*\s+(false|0).{0,99}$' 'bug_php_ssl_disable_curl.txt' "$PHP_FILELIST"
+do_filelist_grep '\$_COOKIE.{0,99}$' 'info_php_cookie.txt' "$PHP_FILELIST"
+do_filelist_grep '\$_GET.{0,99}$' 'info_php_get.txt' "$PHP_FILELIST"
+do_filelist_grep '\$_POST.{0,99}$' 'info_php_post.txt' "$PHP_FILELIST"
+do_filelist_grep '\$_REQUEST.{0,99}$' 'info_php_request.txt' "$PHP_FILELIST"
+do_filelist_grep '\Wpopen\s*\(.{0,200}$' 'info_php_popen.txt' "$PHP_FILELIST"
+do_filelist_grep '\Wpopen.*\(.*\$.*\).{0,99}$' 'bug_php_cmdi_popen_var.txt' "$PHP_FILELIST"
+do_filelist_grep '\Wexec\s*\(.{0,200}$' 'info_php_exec.txt' "$PHP_FILELIST"
+do_filelist_grep 'shell_exec\s*\(.{0,200}$' 'info_php_shell_exec.txt' "$PHP_FILELIST"
+do_filelist_grep 'proc_open\s*\(.{0,200}$' 'info_php_proc_open.txt' "$PHP_FILELIST"
+do_filelist_grep 'escapeshellarg\s*\(.{0,200}$' 'info_php_escapeshellarg.txt' "$PHP_FILELIST"
+do_filelist_grep 'file_get_contents\s*\(.{0,200}$' 'info_php_filegetcontents.txt' "$PHP_FILELIST"
+do_filelist_grep 'parse_str\s*\([^\n,]{0,200}$' 'bug_php_parse_str_no_param.txt' "$PHP_FILELIST"
+do_filelist_grep 'strcmp.*==.{0,200}$' 'bug_php_strcmp_array_bypass.txt'  "$PHP_FILELIST"
+do_filelist_grep 'strcmp.{0,200}$' 'info_php_strcmp.txt'  "$PHP_FILELIST"
+# TODO: BACKTICK do_grep '\Wshell_exec\(.{0,200}$' 'info_php_exec.txt' "$PHP_FILES"
+
+### Ruby rules
+echo 
+info "Starting Ruby specific checks"
+do_filelist_grep '\Wget\s' 'info_ruby_route_get.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wpost\s' 'info_ruby_route_post.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wput\s' 'info_ruby_route_put.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wdelete\s' 'info_ruby_route_delete.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wmatch\s' 'info_ruby_route_match.txt' "$RUBY_FILELIST"
+do_filelist_grep 'IO\.popen.*#\{' 'bug_ruby_cmdi_popen.txt' "$RUBY_FILELIST"
+do_filelist_grep 'IO\.popen' 'info_ruby_cmdi_popen.txt' "$RUBY_FILELIST"
+do_filelist_grep 'Process\.spawn.*#\{' 'bug_ruby_cmdi_spawn.txt' "$RUBY_FILELIST"
+do_filelist_grep 'Process\.spawn' 'info_ruby_cmdi_spawn.txt' "$RUBY_FILELIST"
+do_filelist_grep '%x[\(\{].*#\{' 'bug_ruby_cmdi_percent_x.txt' "$RUBY_FILELIST"
+do_filelist_grep '^[^"\n]*`[^`\n]*#\{[^`\n]+`' 'bug_ruby_cmdi_backtick.txt' "$RUBY_FILELIST"
+do_filelist_grep '^[^"\n]*`[^`\n]+`' 'info_ruby_cmdi_backtick.txt' "$RUBY_FILELIST"
+do_filelist_grep '%x[\(\{]' 'info_ruby_cmdi_percent_x.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wexec\W' 'info_ruby_cmdi_exec.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wsystem\W.*#\{' 'bug_ruby_cmdi_system.txt' "$RUBY_FILELIST"
+do_filelist_grep '\WENV\[".*"\]' 'info_ruby_env.txt' "$RUBY_FILELIST"
+do_filelist_grep '(Digest::MD5|Digest::SHA1)' 'info_ruby_bad_hash.txt' "$RUBY_FILELIST"
+do_filelist_grep '\.headers\["[a-zA-Z0-9-]"\]' 'info_ruby_req_header.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wwhere\(.*#' 'info_ruby_sqli_where.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Wfrom\(.*#' 'info_ruby_sqli_where.txt' "$RUBY_FILELIST"
+do_filelist_grep '\Worder\(.*#' 'info_ruby_sqli_order.txt' "$RUBY_FILELIST"
+do_filelist_grep '"[^"#]*#\{' 'info_ruby_string_interpolation.txt' "$RUBY_FILELIST"
+do_filelist_grep 'https?://.*#\{.{0,99}$' 'bug_ruby_url_string_interpolation.txt' "$RUBY_FILELIST"
+
+#region C# Rules
+echo 
+info "Starting C# specific checks"
+do_filelist_grep '\.AppendFormat.{1,80}\{\d+\}.{0,199}$' 'info_cs_appendformat.txt' "$CS_FILELIST"
+do_filelist_grep '=\s*{.{0,200}$' 'info_cs_sqli_interpolation.txt' "$CS_FILELIST"
+do_filelist_grep '".{0,99}\Wand\W.{0,99}".{0,99}\+.{0,99}$' 'info_cs_sqli_and.txt' "$CS_FILELIST"
+do_filelist_grep 'SkipAuthorization.{0,100}$' 'bug_cs_skip_auth.txt' "$CS_FILELIST"
+do_filelist_grep 'location.{0,10}path.{0,10}=.{0,100}$' 'info_cs_app_paths.txt' "$CS_FILELIST"
+do_filelist_grep 'allow.{0,10}users.{0,10}\*.{0,100}$' 'bug_cs_allow_all.txt' "$CS_FILELIST"
+do_filelist_grep 'allow.{0,10}users.{0,10}=.{0,100}$' 'info_cs_allow_users.txt' "$CS_FILELIST"
+do_filelist_grep 'FormsAuthentication.{0,199}$' 'info_cs_forms_authentication.txt' "$CS_FILELIST"
+do_filelist_grep '\WSystem\.Security\.Cryptography\W.{0,199}$' 'info_cs_crypto.txt' "$CS_FILELIST"
+do_filelist_grep '\WBinaryWrite\W.{0,199}$' 'info_cs_binarywrite.txt' "$CS_FILELIST"
+do_filelist_grep '\WWriteFile\W.{0,199}$' 'info_cs_writefile.txt' "$CS_FILELIST"
+do_filelist_grep '^.{0,199}'\''\{\s*\d+\s*\}'\''.{0,199}$' 'bug_sqli_interpolate_brace.txt' "$CS_FILELIST"
+do_filelist_grep '"select.{0,199}\{.{0,199}$' 'bug_sqli_select_brace.txt' "$CS_FILELIST"
+do_filelist_grep '\sSimpleDB\..{0,99}$' 'bug_cs_sqli_simpleDB.txt' "$CS_FILELIST"
+do_filelist_grep '\W(SqlClient|SqlCommand).{0,99}$' 'bug_cs_sqlClient.txt'  "$CS_FILELIST"
+do_filelist_grep '\W(ExecuteSqlCommand|ExecuteSqlCommandAsync|SqlQuery).{0,99}$' 'bug_cs_sqlCmd.txt' "$CS_FILELIST"
+do_filelist_grep '\WSqlConnection.{0,99}$' 'bug_cs_sqlConnection.txt' "$CS_FILELIST"
+do_filelist_grep '\sunsafe\s.{0,99}$' 'info_cs_unsafe.txt' "$CS_FILELIST"
+do_filelist_grep '(Replace\("\""|Replace\("'\''").{0,99}$' 'bug_cs_replaceQuote.txt' "$CS_FILELIST"
+do_filelist_grep 'Replace.{0,99}'\''.{0,99}'\'\''.{0,99}$' 'bug_cs_sqli_doubleupquote.txt' "$CS_FILELIST"
+do_filelist_grep 'HttpCookie.{0,99}$' 'info_cs_cookie.txt' "$CS_FILELIST"
+do_filelist_grep 'DisableSecurity.{0,99}$' 'bug_cs_disablesecurity.txt' "$CS_FILELIST"
+do_filelist_grep '\[ValidateInput.{1,20}false.{0,99}$' 'bug_cs_validateinput_false.txt' "$CS_FILELIST"
+do_filelist_grep '\WResponse\..{0,99}$' 'info_cs_response_object.txt' "$CS_FILELIST"
+do_filelist_grep '\WRequest\..{0,99}$' 'info_cs_request_object.txt' "$CS_FILELIST"
+do_filelist_grep 'TripleDESCryptoServiceProvider.{0,99}$' 'bug_cs_tripledes.txt'  "$CS_FILELIST"
+do_filelist_grep 'CipherMode\.ECB.{0,99}$' 'bug_cs_weak_ecb_mode.txt' "$CS_FILELIST"
+do_filelist_grep '\[Http(Post|Get|Patch|Put|Delete).{0,99}$' 'info_cs_method.txt' "$CS_FILELIST"
+do_filelist_grep '\.MapRoute\(.{0,299}$' 'info_cs_route.txt' "$CS_FILELIST"
+do_filelist_grep 'Page_Load.{0,99}$' 'info_cs_pageload.txt' "$CS_FILELIST"
+do_filelist_grep '\[(WebMethod|WebService|ScriptMethod|ScriptService).{0,99}$' 'info_cs_webmethod.txt'  "$CS_FILELIST"
+do_filelist_grep '\[AllowAnonymous\].{0,99}$' 'info_cs_allowanonymous.txt' "$CS_FILELIST"
+do_filelist_grep '\.Encrypt\(.{1,99}false.{0,99}$' 'bug_cs_insecure_rsa_padding.txt' "$CS_FILELIST"
+do_filelist_grep '(RIPEMD160|SHA1|MD5|MD2|MD4).{0,99}(.{0,99}){0,99}$' 'bug_web_dotnet_weak_hash.txt' "$CS_FILELIST"
+do_filelist_grep '\W(SqlClient|SqlCommand).{0,99}$' 'info_cs_sqlclient.txt' "$CS_FILELIST"
+do_filelist_grep '\W(ExecuteSqlCommand|ExecuteSqlCommandAsync|SqlQuery).{0,99}$' 'info_cs_sqlcommand.txt' "$CS_FILELIST"
+do_filelist_grep '^\s*\[Obsolete.*$' 'info_cs_obsoletemethods.txt' "$CS_FILELIST"
+do_filelist_grep 'hhmmss' 'bug_cs_invalidtimeformat.txt' "$CS_FILELIST"
+#endregion
+
+
+#region C problems
+# c - (length or size).*(ntoh).* (minus or plus or times)
+echo 
+info "Starting C specific checks"
+do_filelist_grep 'sprintf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_sprintf.txt' "$C_FILELIST"
+do_filelist_grep 'sprintf\s*\(.*\"[^\"]*%ls.{0,99}$' 'bug_c_sprintf_ls.txt' "$C_FILELIST"
+do_filelist_grep 'sscanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_sscanf.txt' "$C_FILELIST"
+do_filelist_grep 'fscanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_fscanf.txt' "$C_FILELIST"
+do_filelist_grep 'scanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_scanf.txt' "$C_FILELIST"
+do_filelist_grep '(length|size).*ntoh.*(-|\+|\*)' 'bug_c_ntoh_length_wrap.txt' "$C_FILELIST"
+do_filelist_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*\(\s*\2\s*\)' 'bug-c-cpy-sizeof-src.txt' "$C_FILELIST"
+do_filelist_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*\2\W' 'bug-c-cpy-sizeof-src2.txt' "$C_FILELIST"
+do_filelist_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*(\([^\)]*\))\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*(\()?\s*\3\s*(\))?' 'bug-c-cpy-sizeof-src3.txt' "$C_FILELIST"
+do_filelist_grep 'memset\s*\([^,]*,[^,]*,\s*0\s*\).{0,99}$' 'bug_c_memset_zero_bytes.txt' "$C_FILELIST"
+do_filelist_grep '(recv|Recv|recvfrom|recvmsg|RecvFrom)\(' 'info-arch_c_recv.txt' "$C_FILELIST"
+do_filelist_grep 'socket\(' 'info_c_socket.txt' "$C_FILELIST"
+do_filelist_grep 'k?malloc\(.*([+*]|-[^>])' 'info_c_malloc_wraparound.txt' "$C_FILELIST"
+do_filelist_grep 'memcpy\(.*([+*]|-[^>])' 'info-c-memcpy-wraparound.txt' "$C_FILELIST"
+do_filelist_grep 'memset\s*\([^,]*,\s*0\s*.{0,99}$' 'info-c-memset-insecure-zeroing.txt' "$C_FILELIST"
+do_filelist_grep '(f|s|vf|v|vs)\?scanf\s*\(.{0,99}$' 'bug_c_scanf.txt' "$C_FILELIST"
+do_filelist_grep '(f|s|vf|v|vs)\?scanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_scanf_s.txt' "$C_FILELIST"
+do_filelist_grep 'sprintf.*\%\.\*s.{0,99}sizeof.{0,99}$' 'bug_fmt_off_by_one.txt' "$C_FILELIST"
+do_filelist_grep 'sprintf.*\%\.\*s.{0,200}$' 'info_potential_fmt_off_by_one.txt' "$C_FILELIST"
+
+# Non-constant format specifiers (format string bugs)
+do_filelist_grep '(printf|vprintf)\s*\([^",]+,[^",]+,' 'info-non-const-fmt-p1.txt' "$C_FILELIST"
+do_filelist_grep '(f|s|as|d|vf|vs|vas|vd)printf\s*\([^",]+,[^",]+,' 'info-non-const-fmt-p2.txt' "$C_FILELIST"
+do_filelist_grep '(sn|vsn)printf\s*\([^",]+,[^",]+,[^",]+,' 'info-non-const-fmt-p3.txt' "$C_FILELIST"
+do_filelist_grep '\+=\s*v?snprintf.{0,99}$' 'bug_snprintf_retval_use.txt' "$C_FILELIST"
+do_filelist_grep '#pragma\s+warning\s*\(\s*suppress' 'info_warning_supress.txt' "$C_FILELIST"
+do_filelist_grep 's.?printf\(.{0,99}(/%s|%s/).{0,99}$' 'info_sprintf_path.txt' "$C_FILELIST"
+do_filelist_grep 'len\s*=.*\*.{0,199}$' 'bug_trusted_length_in_input.txt' "$C_FILELIST"
+#endregion
+
+#region New rules, uncategorised
+echo 
+info "Starting general analysis ..."
+do_filelist_grep '# <?= $token ?>.{0,200}$' 'bug_php_xss_interp.txt' "$PHP_FILELIST"
+do_filelist_grep '<\w+>.*\$\w+.{0,200}$' 'bug_php_xss_tag.txt' "$PHP_FILELIST"
 do_grep '\s+WHERE\s+[^\n]*\$\w+.{0,99}$' 'bug_sqli_where.txt'
 do_grep '^[^\n]{0,99}\$\w+[^\n]{0,99}\s+(AND|OR)\s+[^\n]{0,99}\sIN\s*\([^\n]{0,99}\.[^\n]{0,99}\$\w+[^\n]{0,99}\)[^\n]{0,99}$' 'bug_php_sqli_in.txt'
-do_grep '^\s*access_token:\s*[a-zA-Z0-9\.\-\_\!\?\#\&\*\:\;\@\(\)\<\>\%]{18,}\s*$' 'bug_creds_access_token.txt'
-do_grep '^\s*secret:\s*[a-zA-Z0-9\.\-\_\!\?\#\&\*\:\;\@\(\)\<\>\%]{18,}\s*$' 'bug_cred_secret.txt'
-do_grep '^\s*key:\s*[a-zA-Z0-9\.\-\_\!\?\#\&\*\:\;\@\(\)\<\>\%]{10,}\s*$' 'bug_cred_key.txt'
-do_grep '^\s*password:\s*[a-zA-Z0-9\.\-\_\!\?\#\&\*\:\;\@\(\)\<\>\%]{10,}\s*$' 'bug_cred_password.txt'
-do_grep '[^/]userName:\s*[\.a-zA-Z0-9\_\-]+@[\.a-zA-Z0-9\_\-]+(\.[\.a-zA-Z0-9\_\-]+)+[^\n]{0,200}$' 'bug_username_email.txt'
-do_grep 'api_token=[0-9a-f]{40}.{0,200}$' 'bug_creds_api_token.txt'
+
 do_grep 'http(s)?://\d+\.\d+\.\d+\.\d+.{0,200}$' 'bug_url_numeric.txt' " | grep -v '127.0.0.1'"
 do_grep '\WCVE-\d\d\d\d-.{0,200}$' 'info_cve_id.txt'
 do_grep '\<in\>.{0,199}strings\.Join\(.{0,199}' 'bug_sqli_in_joined_strings.txt'
@@ -387,22 +703,16 @@ do_grep 'strings\.Join\(.{0,199}'\''.{0,199}$' 'bug_sqli_joined_strings_sgl.txt'
 do_grep 'url-pattern{0,200}$' 'info-url-pattern.txt'
 do_grep 'intercept-url{0,200}$' 'info-intercept-url.txt'
 do_grep '[\s"'\''^\(\{\[]root/[a-zA-Z0-9\.\-\_\!\?\#\&\*\:\;\@\(\)\<\>\%]{12,}' 'bug_rootpwd.txt'
-do_grep 'useradd.{0,200}$' 'bug_useradd.txt'
-do_grep 'chpasswd.{0,200}$' 'bug_chpasswd.txt'
-do_grep 'Authorization.{0,20}Basic.{0,200}$' 'info_auth_basic.txt'
-do_grep 'TODO.*encrypt.{0,200}$' 'info_todo_encrypt.txt'
-do_grep 'TODO.*authenticate.{0,200}$' 'info_todo_authenticate.txt'
-do_grep 'TODO.*login.{0,200}$' 'info_todo_login.txt'
-do_grep 'TODO.*password.{0,200}$' 'info_todo_password.txt'
-do_grep 'password.*TODO.{0,200}$' 'info_todo_password2.txt'
+
 do_grep '@Controller.{0,200}$' 'info_routing_controller.txt'
 do_grep '\W(asan|address_sanitizer|no_sanitize_address)\W.{0,200}$' 'info_asan_reference.txt' "-i"
 do_grep '\W(segvs|segv|sigsegv)\W.{0,200}$' 'info_segv_reference.txt' "-i"
 do_grep 'boost::process::child.{0,200}$' 'info_boost_process.txt'
 do_grep 'mongodb://.{0,200}$' 'info_mongodb_url.txt'
-do_grep 'len\s*=.*\*.{0,199}$' 'bug_trusted_length_in_input.txt' "-i $C_FILES"
-do_grep 'WERKZEUG_DEBUG_PIN.{0,200}$' 'bug_workzeug_debugger_active.txt'
-do_grep '"[^"]*-[^"]\{[^"]*"\.format.{0,99}$' 'info_python_format_cmdi.txt'
+
+do_filelist_grep 'len\s*=.*\*.{0,199}$' 'bug_trusted_length_in_input.txt' "$C_FILELIST" 
+do_filelist_grep 'WERKZEUG_DEBUG_PIN.{0,200}$' 'bug_workzeug_debugger_active.txt' "$PYTHON_FILELIST"
+do_filelist_grep '"[^"]*-[^"]\{[^"]*"\.format.{0,99}$' 'info_python_format_cmdi.txt' "$PYTHON_FILELIST"
 do_grep 'obfusc.{0,200}$' 'info_obfuscation.txt'
 do_grep 'FMemory::' 'info_unreal_mem.txt'
 do_grep 'FPaths::' 'info_unreal_paths.txt'
@@ -410,8 +720,7 @@ do_grep 'FFileHelper::' 'info_unreal_fs.txt'
 do_grep 'FModuleManager::' 'info_unreal_module.txt'
 do_grep '^[^$"\n]*"[^$"\n]*/[^$"\n]*".{0,99}$' 'info_paths.txt'
 do_grep '^.{0,200}\bnetsh\b.{0,200}$' 'info_netsh.txt'
-do_grep 's3://[^\.].{3,199}$' 'info_const_amazon_s3_url.txt'
-do_grep 'https://s3-.{3,299}$' 'info_const_amazon_s3_url2.txt'
+
 do_grep 'SQLite format 3' 'info_sqlite3_files.txt' '-ial'
 do_grep 'do\s+shell\s+script.{0,199}$' 'bug_applescript_shell.txt'
 do_grep 'RpcServerRegisterIf.{0,199}$' 'info_rpc_reg.txt'
@@ -423,158 +732,26 @@ do_grep '\W(LoadLibrary|LoadLibraryA|LoadLibraryW|LoadLibraryEx|LoadLibraryExA|L
 do_grep '\S{10,199}\.rds\.amazonaws\.com' 'bug_rds_hosts.txt'
 do_grep '\S{10,199}\.amazonaws\.com.{0,199}$' 'bug_aws_hosts.txt'
 do_grep 'require\(.{0,99}'\''\s*+.{0,99}$' 'bug_js_var_include.txt'
+#endregion
 
-# Apple
-do_grep 'KeychainItem.{0,200}$' 'info_apple_keychain_item.txt' "$APPLE_FILES"
-do_grep 'kSecValueData.{0,200}$' 'info_apple_ksecvaluedata.txt' "$APPLE_FILES"
-do_grep 'SecItemUpdate.{0,200}$' 'info_apple_secitemupdate.txt' "$APPLE_FILES"
-
-
-
-# PHP
-do_grep '\.\s+\$_GET.{0,99}$' 'bug_php_get_param_in_string.txt' "$PHP_FILES"
-do_grep '\.\s+\$_POST.{0,99}$' 'bug_php_post_param_in_string.txt' "$PHP_FILES"
-do_grep '\.\s+\$_COOKIE.{0,99}$' 'bug_php_cookie_param_in_string.txt' "$PHP_FILES"
-do_grep '\.\s+\$_REQUEST.{0,99}$' 'bug_php_request_param_in_string.txt' "$PHP_FILES"
-do_grep 'create_function.{0,99}$' 'bug_php_create_function.txt' "$PHP_FILES"
-do_grep 'filter_input.{0,99}$' 'bug_php_filter_input.txt' "$PHP_FILES"
-do_grep '(include|require).{0,99}\$.{0,99}$' 'bug_php_var_include.txt' "$PHP_FILES"
-do_grep '\$\w+\(.{0,99}$' 'bug_php_var_func.txt' "$PHP_FILES"
-do_grep 'order\s+by.{0,200}'\''.{0,200}\$.{0,200}$' 'bug_php_order_by.txt' "$PHP_FILES"
-do_grep '\W(mt_rand|mt_srand|lcg_value|rand|uniqid|microtime|shuffle)\W.{0,99}$' 'bug_php_bad_rand.txt' "$PHP_FILES"
-do_grep '\W(openssl_random_pseudo_bytes|random_int|random_bytes)\W.{0,99}$' 'info_php_good_rand.txt' "$PHP_FILES"
-do_grep 'assert\(\s*"?\$\w*"?\s*\).{0,99}$' 'bug_php_rce_assert.txt' "$PHP_FILES"
-do_grep 'eval\(\s*"?\$\w*"?\s*\).{0,99}$' 'bug_php_rce_eval.txt' "$PHP_FILES"
-do_grep '_protect_identifiers.*FALSE.{0,99}$' 'bug_php_sqli_codeigniter_disable_escape.txt' "$PHP_FILES"
-do_grep 'select\(.*FALSE.{0,99}$' 'bug_php_sqli_codeigniter_select_disable_escape.txt' "$PHP_FILES"
-do_grep 'CURLOPT_SSL_VERIFYHOST\s*[=>,]*\s+(false|0).{0,99}$' 'bug_php_ssl_disable_curl.txt' "$PHP_FILES"
-do_grep '\$_COOKIE.{0,99}$' 'info_php_cookie.txt' "$PHP_FILES"
-do_grep '\$_GET.{0,99}$' 'info_php_get.txt' "$PHP_FILES"
-do_grep '\$_POST.{0,99}$' 'info_php_post.txt' "$PHP_FILES"
-do_grep '\$_REQUEST.{0,99}$' 'info_php_request.txt' "$PHP_FILES"
-
-do_grep '\Wpopen\s*\(.{0,200}$' 'info_php_popen.txt' "$PHP_FILES"
-do_grep '\Wpopen.*\(.*\$.*\).{0,99}$' 'bug_php_cmdi_popen_var.txt' "$PHP_FILES"
-do_grep '\Wexec\s*\(.{0,200}$' 'info_php_exec.txt' "$PHP_FILES"
-do_grep 'shell_exec\s*\(.{0,200}$' 'info_php_shell_exec.txt' "$PHP_FILES"
-do_grep 'proc_open\s*\(.{0,200}$' 'info_php_proc_open.txt' "$PHP_FILES"
-do_grep 'escapeshellarg\s*\(.{0,200}$' 'info_php_escapeshellarg.txt' "$PHP_FILES"
-do_grep 'file_get_contents\s*\(.{0,200}$' 'info_php_filegetcontents.txt' "$PHP_FILES"
-do_grep 'parse_str\s*\([^\n,]{0,200}$' 'bug_php_parse_str_no_param.txt' "$PHP_FILES"
-do_grep 'strcmp.*==.{0,200}$' 'bug_php_strcmp_array_bypass.txt'  "$PHP_FILES"
-do_grep 'strcmp.{0,200}$' 'info_php_strcmp.txt'  "$PHP_FILES"
-# TODO: BACKTICK do_grep '\Wshell_exec\(.{0,200}$' 'info_php_exec.txt' "$PHP_FILES"
-
-
-# C problems
-# c - (length or size).*(ntoh).* (minus or plus or times)
-do_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)' 'info-c-cpy-not-sizeof-dest.txt' "-i $C_FILES" "grep -Pv '\W(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*(\([^\)]*\))?\s*([^,]+)\s*,\s*[^,]+\s*,\s*(strlen|sizeof)\s*(\()?\s*\3\s*(\))?'"
-do_grep 'sprintf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_sprintf.txt' "-i $C_FILES"
-do_grep 'sprintf\s*\(.*\"[^\"]*%ls.{0,99}$' 'bug_c_sprintf_ls.txt' "-i $C_FILES"
-do_grep '"database/sql"' 'info_sqli_go_sqlmodule.txt' "$GO_FILES"
-do_grep 'sscanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_sscanf.txt' "-i $C_FILES"
-do_grep 'fscanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_fscanf.txt' "-i $C_FILES"
-do_grep 'scanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_scanf.txt' "-i $C_FILES"
-do_grep '(length|size).*ntoh.*(-|\+|\*)' 'bug_c_ntoh_length_wrap.txt' "-i $C_FILES"
-do_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*\(\s*\2\s*\)' 'bug-c-cpy-sizeof-src.txt' "-i $C_FILES"
-do_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*\2\W' 'bug-c-cpy-sizeof-src2.txt' "-i $C_FILES"
-do_grep '(strlcpy|strlcat|strncpy|strncat|strcpy_s|strcat_s)\s*\(\s*(\([^\)]*\))\s*[^,]+\s*,\s*([^,]+)\s*,\s*(strlen|sizeof)\s*(\()?\s*\3\s*(\))?' 'bug-c-cpy-sizeof-src3.txt' "-i $C_FILES"
-do_grep 'memset\s*\([^,]*,[^,]*,\s*0\s*\).{0,99}$' 'bug_c_memset_zero_bytes.txt' "-i $C_FILES"
-do_grep '(recv|Recv|recvfrom|recvmsg|RecvFrom)\(' 'info-arch_c_recv.txt' "-i $C_FILES"
-do_grep 'socket\(' 'info_c_socket.txt' "-i $C_FILES"
-do_grep 'k?malloc\(.*([+*]|-[^>])' 'info_c_malloc_wraparound.txt' "-i $C_FILES"
-do_grep 'memcpy\(.*([+*]|-[^>])' 'info-c-memcpy-wraparound.txt' "-i $C_FILES"
-do_grep 'memset\s*\([^,]*,\s*0\s*.{0,99}$' 'info-c-memset-insecure-zeroing.txt' "-i $C_FILES"
-do_grep '(f|s|vf|v|vs)\?scanf\s*\(.{0,99}$' 'bug_c_scanf.txt' "-i $C_FILES"
-do_grep '(f|s|vf|v|vs)\?scanf\s*\(.*\"[^\"]*%s.{0,99}$' 'bug_c_scanf_s.txt' "-i $C_FILES"
-do_grep 'sprintf.*\%\.\*s.{0,99}sizeof.{0,99}$' 'bug_fmt_off_by_one.txt' "-i $C_FILES"
-do_grep 'sprintf.*\%\.\*s.{0,200}$' 'info_potential_fmt_off_by_one.txt' "-i $C_FILES"
-# Non-constant format specifiers (format string bugs)
-do_grep '(printf|vprintf)\s*\([^",]+,[^",]+,' 'info-non-const-fmt-p1.txt' "-i $C_FILES"
-do_grep '(f|s|as|d|vf|vs|vas|vd)printf\s*\([^",]+,[^",]+,' 'info-non-const-fmt-p2.txt' "-i $C_FILES"
-do_grep '(sn|vsn)printf\s*\([^",]+,[^",]+,[^",]+,' 'info-non-const-fmt-p3.txt' "-i $C_FILES"
-do_grep '\+=\s*v?snprintf.{0,99}$' 'bug_snprintf_retval_use.txt' "-i $C_FILES"
-do_grep '#pragma\s+warning\s*\(\s*suppress' 'info_warning_supress.txt' "-i $C_FILES"
-do_grep 's.?printf\(.{0,99}(/%s|%s/).{0,99}$' 'info_sprintf_path.txt' "-i $C_FILES"
-
+echo 
+info "Starting URL-based checks"
 do_grep 'http://([a-zA-Z0-9]+\.)+[a-zA-Z0-9]+.{0,200}$' 'bug_insecure_url.txt' '' "grep -Pv ':\s*(\*+|//|/*|#|;)\s+' | grep -Pv ':\s*http://' | grep -Pvi '(readme|\.md|\.txt|xlmns|doctype)'"
 do_grep '^.{0,200}http://.{0,200}$' 'bug_insecure_url2.txt' '' "grep -Pv ':\s*(\*+|//|/*|#|;)\s+' | grep -Pv ':\s*http://' | grep -Pvi '(readme|\.md|\.txt|xlmns|doctype)'"
 do_grep 'https://([a-zA-Z0-9]+\.)+[a-zA-Z0-9]+.{0,200}$' 'info_secure_url.txt'
+do_grep 's3://[^\.].{3,199}$' 'info_const_amazon_s3_url.txt'
+do_grep 'https://s3-.{3,299}$' 'info_const_amazon_s3_url2.txt'
 
 do_grep_return_uniq_token '\bF\w+::' 'info_unreal_FAPI.txt'
 do_grep_return_uniq_token '\bU\w+::' 'info_unreal_UAPI.txt'
 
-### Ruby rules
-do_grep '\Wget\s' 'info_ruby_route_get.txt' "$RUBY_FILES"
-do_grep '\Wpost\s' 'info_ruby_route_post.txt' "$RUBY_FILES"
-do_grep '\Wput\s' 'info_ruby_route_put.txt' "$RUBY_FILES"
-do_grep '\Wdelete\s' 'info_ruby_route_delete.txt' "$RUBY_FILES"
-do_grep '\Wmatch\s' 'info_ruby_route_match.txt' "$RUBY_FILES"
-do_grep 'IO\.popen.*#\{' 'bug_ruby_cmdi_popen.txt' "$RUBY_FILES"
-do_grep 'IO\.popen' 'info_ruby_cmdi_popen.txt' "$RUBY_FILES"
-do_grep 'Process\.spawn.*#\{' 'bug_ruby_cmdi_spawn.txt' "$RUBY_FILES"
-do_grep 'Process\.spawn' 'info_ruby_cmdi_spawn.txt' "$RUBY_FILES"
-do_grep '%x[\(\{].*#\{' 'bug_ruby_cmdi_percent_x.txt' "$RUBY_FILES"
-do_grep '^[^"\n]*`[^`\n]*#\{[^`\n]+`' 'bug_ruby_cmdi_backtick.txt' "$RUBY_FILES"
-do_grep '^[^"\n]*`[^`\n]+`' 'info_ruby_cmdi_backtick.txt' "$RUBY_FILES"
-do_grep '%x[\(\{]' 'info_ruby_cmdi_percent_x.txt' "$RUBY_FILES"
-do_grep '\Wexec\W' 'info_ruby_cmdi_exec.txt' "$RUBY_FILES"
-do_grep '\Wsystem\W.*#\{' 'bug_ruby_cmdi_system.txt' "$RUBY_FILES"
-do_grep '\WENV\[".*"\]' 'info_ruby_env.txt' "$RUBY_FILES"
-do_grep '(Digest::MD5|Digest::SHA1)' 'info_ruby_bad_hash.txt' "$RUBY_FILES"
-do_grep '\.headers\["[a-zA-Z0-9-]"\]' 'info_ruby_req_header.txt' "$RUBY_FILES"
-do_grep '\Wwhere\(.*#' 'info_ruby_sqli_where.txt' "$RUBY_FILES"
-do_grep '\Wfrom\(.*#' 'info_ruby_sqli_where.txt' "$RUBY_FILES"
-do_grep '\Worder\(.*#' 'info_ruby_sqli_order.txt' "$RUBY_FILES"
-do_grep '"[^"#]*#\{' 'info_ruby_string_interpolation.txt' "$RUBY_FILES"
-do_grep 'https?://.*#\{.{0,99}$' 'bug_ruby_url_string_interpolation.txt' "$RUBY_FILES"
-
 do_grep 'SimpleDB.{0,99}$' 'info_simpleDB.txt' '-i'
 do_grep '\.SelectRequest.{0,99}$' 'bug_sqli_simpleDBSelect.txt' '-i'
-do_grep '"[\s\(]*\b(select|insert|update|delete)\b.{0,199}"\s*\+\s*\w+.{0,99}$' 'bug_sqli_java_concat.txt'
-
-### c# rules
-do_grep '\.AppendFormat.{1,80}\{\d+\}.{0,199}$' 'info_cs_appendformat.txt'
-do_grep '=\s*{.{0,200}$' 'info_cs_sqli_interpolation.txt' "-i $CS_FILES"
-do_grep '".{0,99}\Wand\W.{0,99}".{0,99}\+.{0,99}$' 'info_cs_sqli_and.txt'
-do_grep 'SkipAuthorization.{0,100}$' 'bug_cs_skip_auth.txt'
-do_grep 'location.{0,10}path.{0,10}=.{0,100}$' 'info_cs_app_paths.txt'
-do_grep 'allow.{0,10}users.{0,10}\*.{0,100}$' 'bug_cs_allow_all.txt'
-do_grep 'allow.{0,10}users.{0,10}=.{0,100}$' 'info_cs_allow_users.txt'
-do_grep 'FormsAuthentication.{0,199}$' 'info_cs_forms_authentication.txt'
-do_grep '\WSystem\.Security\.Cryptography\W.{0,199}$' 'info_cs_crypto.txt' "-i $CS_FILES"
-do_grep '\WBinaryWrite\W.{0,199}$' 'info_cs_binarywrite.txt' "-i $CS_FILES"
-do_grep '\WWriteFile\W.{0,199}$' 'info_cs_writefile.txt' "-i $CS_FILES"
-do_grep 'directoryBrowse.{1,20}enable.{1,20}true.{0,99}$' 'bug_cs_dirBrowse.txt' '--include=*.config'
-do_grep '^.{0,199}'\''\{\s*\d+\s*\}'\''.{0,199}$' 'bug_sqli_interpolate_brace.txt' "-i $CS_FILES"
-do_grep '"select.{0,199}\{.{0,199}$' 'bug_sqli_select_brace.txt' "-i $CS_FILES"
-do_grep '\sSimpleDB\..{0,99}$' 'bug_cs_sqli_simpleDB.txt' "-i $CS_FILES"
-do_grep '\W(SqlClient|SqlCommand).{0,99}$' 'bug_cs_sqlClient.txt' "$CS_FILES"
-do_grep '\W(ExecuteSqlCommand|ExecuteSqlCommandAsync|SqlQuery).{0,99}$' 'bug_cs_sqlCmd.txt' "$CS_FILES"
-do_grep '\WSqlConnection.{0,99}$' 'bug_cs_sqlConnection.txt' "$CS_FILES"
-do_grep '\sunsafe\s.{0,99}$' 'info_cs_unsafe.txt' "$CS_FILES"
-do_grep '(Replace\("\""|Replace\("'\''").{0,99}$' 'bug_cs_replaceQuote.txt' "$CS_FILES"
-do_grep 'Replace.{0,99}'\''.{0,99}'\'\''.{0,99}$' 'bug_cs_sqli_doubleupquote.txt' "$CS_FILES"
-do_grep 'HttpCookie.{0,99}$' 'info_cs_cookie.txt' "$CS_FILES"
-do_grep 'DisableSecurity.{0,99}$' 'bug_cs_disablesecurity.txt' "$CS_FILES"
-do_grep '\[ValidateInput.{1,20}false.{0,99}$' 'bug_cs_validateinput_false.txt' "$CS_FILES"
-do_grep '\WResponse\..{0,99}$' 'info_cs_response_object.txt' "$CS_FILES"
-do_grep '\WRequest\..{0,99}$' 'info_cs_request_object.txt' "$CS_FILES"
-do_grep 'TripleDESCryptoServiceProvider.{0,99}$' 'bug_cs_tripledes.txt' "$CS_FILES"
-do_grep 'CipherMode\.ECB.{0,99}$' 'bug_cs_weak_ecb_mode.txt' "$CS_FILES"
-do_grep '\[Http(Post|Get|Patch|Put|Delete).{0,99}$' 'info_cs_method.txt' "$CS_FILES"
-do_grep '\.MapRoute\(.{0,299}$' 'info_cs_route.txt' "$CS_FILES"
-do_grep 'Page_Load.{0,99}$' 'info_cs_pageload.txt' "$CS_FILES"
-do_grep '\[(WebMethod|WebService|ScriptMethod|ScriptService).{0,99}$' 'info_cs_webmethod.txt' "$CS_FILES"
-do_grep '\[AllowAnonymous\].{0,99}$' 'info_cs_allowanonymous.txt' "$CS_FILES"
-do_grep '\.Encrypt\(.{1,99}false.{0,99}$' 'bug_cs_insecure_rsa_padding.txt' "$CS_FILES"
-do_grep '(RIPEMD160|SHA1|MD5|MD2|MD4).{0,99}(.{0,99}){0,99}$' 'bug_web_dotnet_weak_hash.txt' "$CS_FILES"
-do_grep '\W(SqlClient|SqlCommand).{0,99}$' 'info_cs_sqlclient.txt' 
-do_grep '\W(ExecuteSqlCommand|ExecuteSqlCommandAsync|SqlQuery).{0,99}$' 'info_cs_sqlcommand.txt'
-
-
+do_filelist_grep '"[\s\(]*\b(select|insert|update|delete)\b.{0,199}"\s*\+\s*\w+.{0,99}$' 'bug_sqli_java_concat.txt' "$JAVA_FILELIST"
 
 # Weak Randomness
+echo 
+info "Starting weak randomnness checks"
 do_grep '\W(CryptGenRandom)\W.{0,99}$' 'info_rand_windows_good.txt'
 do_grep '\W(System\.Random).{0,99}$' 'bug_rand_net_random.txt'
 do_grep '\WMath\.random\(\W.{0,99}$' 'bug_rand_math_random.txt'
@@ -586,17 +763,20 @@ do_grep '\W(ftime|gettimeofday|GetTickCount|GetTickCount64|QueryPerformanceCount
 
 
 # sqli
+echo 
+info "Starting SQL-related checks checks"
 do_grep 'ExecuteStoredProcedure\(.{0,99}$' 'info_sqli_exec_sp.txt'
 do_grep 'PQescapeString\(.{0,99}$' 'bug_sqli_deprecated_escape.txt'
 do_grep 'mysql_escape_string\(.{0,99}$' 'bug_sqli_deprecated_escape2.txt'
-do_exec 'grep -r \\.Where * | grep -v \=\>' 'info_sqli_where_dotnet.txt'
+do_grep 'grep -r \\.Where * | grep -v \=\>' 'info_sqli_where_dotnet.txt' "$CS_FILES"
 do_grep '"select\s.{1,200}%s.{0,99}$' 'bug_sqli_c.txt'
 do_grep '("|'\'')(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|USE)\s.*%(s|r).*("|'\'').{0,99}$' 'bug_sqli_percent_interpolation.txt'
 do_grep '("|'\'')(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|USE)\s.*\$.*("|'\'').{0,99}$' 'bug_sqli_dollar_interpolation.txt'
 do_grep '("|'\'')(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|USE)\s.*{\d+}.*("|'\'').{0,99}$' 'bug_sqli_brace_interpolation.txt'
-do_grep '\.(executeQuery|executequery|executeUpdate).{0,99}$' 'info_sqli_java_sqli.txt'
-do_grep '\.execute\(\s*".{0,99}\%s.{0,99}$' 'bug_sqli_py_interp.txt'
-do_grep '\.Select\(.{0,99}$' 'info_sqli_go_select.txt'
+do_filelist_grep '\.(executeQuery|executequery|executeUpdate).{0,99}$' 'info_sqli_java_sqli.txt' "$JAVA_FILELIST" 
+do_filelist_grep '\.execute\(\s*".{0,99}\%s.{0,99}$' 'bug_sqli_py_interp.txt' "$PYTHON_FILELIST"
+do_filelist_grep '\.Select\(.{0,99}$' 'info_sqli_go_select.txt' "$GO_FILELIST"
+do_filelist_grep '"database/sql"' 'info_sqli_go_sqlmodule.txt' "$GO_FILELIST"
 do_grep '\W(exec\ssp_|exec\sxp_).{0,99}$' 'info_sqli_sp_xp.txt'
 do_grep '\W(OleDbConnection|ADODB\.|System\.Data\.Sql|\.ResultSet).{0,99}$' 'info_sqli_sql_apis.txt' '--exclude=*.config'
 do_grep '\Wexecute\s+immediate\W.{0,99}$' 'bug_sqli_oracle_execute_immediate.txt'
@@ -612,13 +792,18 @@ do_grep 'dblink.{0,99}$' 'info_sqli_dblink.txt'
 do_grep 'dbms_sql.execute.{0,99}$' 'bug_sqli_dbms_sql_exec.txt'
 do_grep 'dbms_sql.parse.{0,99}$' 'bug_sqli_orcl_dbms_sql_parse.txt'
 do_grep 'EXECUTE\s+IMMEDIATE.{0,99}$' 'bug_sqli_orcl_exec_immediate.txt'
-do_grep 'import\s+java.sql.{0,99}$' 'info_sqli_import_java_sql.txt'
+
+do_filelist_grep 'import\s+java.sql.{0,99}$' 'info_sqli_import_java_sql.txt' "$JAVA_FILELIST" 
+do_filelist_grep 'sql\.append\(.{0,99}$' 'bug_sqli_java_sqli_append.txt' "$JAVA_FILELIST" 
+
 do_grep 'order\sby.{0,99}$' 'info_sqli_order_by.txt'
 do_grep 'queryBuilder.{0,99}$' 'info_sqli_queryBuilder.txt'
-do_grep 'sql\.append\(.{0,99}$' 'bug_sqli_java_sqli_append.txt'
+
 do_grep 'sqlHelper.runQuery.{0,99}$' 'info_sqli_sqlHelper.txt'
 
 # cmdi
+echo 
+info "Starting cmdi checks"
 do_grep '^.{0,99}\Wexec\(.{0,99}$' 'info_cmdi_exec2.txt'
 do_grep '^.{0,99}\Wspawn\(.{0,99}$' 'info_cmdi_spawn.txt'
 do_grep '\"\w+\.exe\".{0,99}$' 'info_cmdi_exe_exec.txt'
@@ -643,6 +828,8 @@ do_grep 'shell_exec.{0,99}$' 'info_cmdi_shell_exec.txt'
 do_grep '\W\.exec.{0,99}$' 'info_cmdi_exec.txt'
 
 # string interpolation
+echo 
+info "Starting string interpolation checks"
 do_grep \''\s*\+.{0,99}\+\s*'\''.{0,99}$' 'info_str_plus.txt'
 do_grep '\".{0,99}\$.{0,99}\".{0,99}$' 'info_str_interp_dollar.txt'
 do_grep '\.mkString\(.{0,99}$' 'info_str_scala_mkString.txt'
@@ -651,58 +838,70 @@ do_grep '^.{0,99}'\"\''.{0,99}$' 'bug_str_mixed_quote_dbl.txt'
 do_grep '^.{0,99}'\'\"'.{0,99}$' 'bug_str_mixed_quote_sgl.txt'
 do_grep '\.Format.{1,80}\s-.{1,80}{\d+}.{0,99}$' 'info_str_dot_net.txt'
 do_grep '\.Format.{1,80}\{\d+\}.{1,80}\s-.{1,80}.{0,99}$' 'info_str_dot_net2.txt'
-
 do_grep 'string\.Join\(.{0,199}$' 'info_str_join.txt'
 
 # Elevation
+echo 
+info "Starting *nix privesc checks"
 do_grep 'chown\(.{0,199}$' 'info_priv_chown.txt'
 do_grep 'chmod\(.{0,199}$' 'info_priv_chmod.txt'
 
 # SSL Diabling
+echo 
+info "Starting SSL disablement checks"
 do_grep 'curl.{0,99}\s-k\W.{0,99}$' 'bug_ssl_disable_curl.txt'
-do_grep 'checkServerTrusted.{0,99}$' 'bug_ssl_disable_python.txt'
-do_grep 'InsecureRequestWarning.{0,99}$' 'bug_ssl_disable_java.txt'
-do_grep 'no-check-cert.{0,99}$' 'bug_ssl_disable_python2.txt'
-do_grep 'verify\s*=\s*False.{0,99}$' 'bug_ssl_disable_python3.txt'
+do_filelist_grep 'checkServerTrusted.{0,99}$' 'bug_ssl_disable_python.txt' "$PYTHON_FILELIST"
+do_filelist_grep 'InsecureRequestWarning.{0,99}$' 'bug_ssl_disable_java.txt' "$JAVA_FILELIST"
+do_filelist_grep 'ServerCertificateValidationCallback' 'bug_ssl_dotnet.txt' "$CS_FILELIST"   # Only a bug if its set to 'true'
+do_filelist_grep 'no-check-cert.{0,99}$' 'bug_ssl_disable_python2.txt' "$PYTHON_FILELIST"
+do_filelist_grep 'verify\s*=\s*False.{0,99}$' 'bug_ssl_disable_python3.txt' "$PYTHON_FILELIST"
 do_grep 'StrictHostKeyChecking=no.{0,99}$' 'bug_ssh_disable_hostkey_check.txt'
 
 # Web routing etc
-do_grep '\.add_resource\W.{0,200}$' 'info_routing_python.txt'
-do_grep '\W(Application_OnAuthenticateRequest|Application_OnAuthorizeRequest|Session_OnStart).{0,99}$' 'info_web_net_events.txt'
+echo 
+info "Starting web routing analysis"
+do_filelist_grep '\.add_resource\W.{0,200}$' 'info_routing_python.txt' "$PYTHON_FILELIST"
+do_filelist_grep '\W(Application_OnAuthenticateRequest|Application_OnAuthorizeRequest|Session_OnStart).{0,99}$' 'info_web_net_events.txt' "$CS_FILELIST"
 do_grep '\W(RequestMinimum|RequestOptional|SkipVerification|UnmanagedCode).{0,99}$' 'bug_web_sec_override.txt'
 do_grep '\W(FileInputStream|FilterInputStream|SequenceInputStream|StringBufferInputStream|ByteArrayInputStream|FileOutputStream).{0,99}$' 'info_web_input.txt'
 do_grep '\W(getRemoteAddr|getRemoteHost).{0,99}$' 'info_web_remote_name.txt'
 do_grep '\W(getRealPath).{0,99}$' 'info_web_path.txt'
-do_grep 'require\('\''fs'\''\).{0,99}$' 'info_py_filesystem.txt'
+do_filelist_grep 'require\('\''fs'\''\).{0,99}$' 'info_py_filesystem.txt' "$PYTHON_FILELIST"
 do_grep '/endpoints/.{0,99}$' 'info_endpoints.txt'
 do_grep '\[Route\(.{0,99}$' 'info_routing_decorator.txt'
 do_grep '\[RoutePrefix\(.{0,99}$' 'info_routing_decorator2.txt'
 do_grep '\.route\(.{0,199}$' 'info_routing_web.txt'
 do_grep '\WRequest\..{0,99}$' 'info_web_request_dot.txt'
 do_grep 'Get\[.{0,99}$' 'info_routing_get.txt'
-do_grep '@GET.{0,99}$' 'info_routing_java_get.txt'
-do_grep '@GetMapping.{0,99}$' 'info_routing_java_getmapping.txt'
-do_grep '@POST.{0,99}$' 'info_routing_java_post.txt'
-do_grep '@Path\(.{0,99}$' 'info_routing_java_path.txt'
-do_grep '@RequestMapping.{0,99}$' 'info_routing_java_requestmapping.txt'
-do_grep 'RequestMethod\.[A-Z]+.{0,99}$' 'info_routing_java_requestmethod.txt'
+do_filelist_grep '@GET.{0,99}$' 'info_routing_java_get.txt' "$JAVA_FILELIST"
+do_filelist_grep '@GetMapping.{0,99}$' 'info_routing_java_getmapping.txt' "$JAVA_FILELIST"
+do_filelist_grep '@POST.{0,99}$' 'info_routing_java_post.txt' "$JAVA_FILELIST"
+do_filelist_grep '@Path\(.{0,99}$' 'info_routing_java_path.txt' "$JAVA_FILELIST"
+do_filelist_grep '@RequestMapping.{0,99}$' 'info_routing_java_requestmapping.txt' "$JAVA_FILELIST"
+do_filelist_grep 'RequestMethod\.[A-Z]+.{0,99}$' 'info_routing_java_requestmethod.txt' "$JAVA_FILELIST"
 do_grep '\badd_resource\b' 'info_routing_flask.txt'
 do_grep '^.{0,99}\.get\(.{0,99}$' 'info_routing_node_get.txt'
 do_grep '^.{0,99}\.put\(.{0,99}$' 'info_routing_node_put.txt'
 do_grep '^.{0,99}\.post\(.{0,99}$' 'info_routing_node_post.txt'
 
 # Web request handler
-do_grep '\.getHeader\(.{0,99}$' 'info_web_java_custom_header.txt'
+echo 
+info "Starting SSL disablement checks"
+do_filelist_grep '\.getHeader\(.{0,99}$' 'info_web_java_custom_header.txt' "$JAVA_FILELIST"
 do_grep 'HttpServletRequest.{0,99}$' 'info_web_HttpServletRequest.txt'
-do_grep 'HttpResponseMessage.{0,99}$' 'info_web_dotnet.txt'
+do_filelist_grep 'HttpResponseMessage.{0,99}$' 'info_web_dotnet.txt' "$CS_FILELIST"
 
 # deserialisation
-do_grep '\.readObject\(.{0,99}$' 'bug_java_deserialisation.txt'
-do_grep 'pickle\.loads\(.{0,99}$' 'bug_python_deserialisation.txt'
-do_grep 'pickle\.load\(.{0,99}$' 'bug_python_deserialisation2.txt'
-do_grep '\.loads\(.{0,99}$' 'info_python_deserial.txt'
+echo 
+info "Starting deserialization checks"
+do_filelist_grep '\.readObject\(.{0,99}$' 'bug_java_deserialisation.txt'  "$JAVA_FILELIST"
+do_filelist_grep 'pickle\.loads\(.{0,99}$' 'bug_python_deserialisation.txt' "$PYTHON_FILELIST"
+do_filelist_grep 'pickle\.load\(.{0,99}$' 'bug_python_deserialisation2.txt' "$PYTHON_FILELIST"
+do_filelist_grep '\.loads\(.{0,99}$' 'info_python_deserial.txt' "$PYTHON_FILELIST"
 
 # File system
+echo 
+info "Starting file system interaction analysis"
 do_grep 'FileStream.{0,99}$' 'info_file_Stream.txt'
 do_grep '\WFile\.Copy\(.{0,99}$' 'info_file_copy.txt'
 do_grep 'copyFile\(.{0,99}$' 'info_file_copyFile.txt'
@@ -710,10 +909,12 @@ do_grep 'File\..{0,99}$' 'info_file_dot.txt'
 do_grep 'FileSystem\W.{0,99}$' 'info_fileSystem_call.txt'
 do_grep 'MemoryMappedFile.{0,99}$' 'info_memoryMappedFile.txt'
 do_grep 'new\sFile\(.{0,99}$' 'info_new_file.txt'
-do_grep '\.SaveAs\(.{0,99}$' 'info_dotnet_saveas.txt'
+do_filelist_grep '\.SaveAs\(.{0,99}$' 'info_dotnet_saveas.txt' "$CS_FILELIST"
 do_grep 'file_get_contents.{0,99}$' 'info_file_get_contents.txt'
 
 # Crypto
+echo 
+info "Starting weak crypto analysis"
 do_grep '[D|d]iffie.*[H|h]ellman.{0,99}$' 'info_crypto_diffie_hellman.txt'
 do_grep 'AES\.DecryptFromBase64.{0,99}$' 'info_crypto_b64.txt'
 do_grep 'AES\.DecryptFromBase64.{0,99}$' 'info_crypto_b64_2.txt'
@@ -721,16 +922,20 @@ do_grep '\W(AES|DES|SHA|SHA1|SHA2|SHA256|SHA512|blowfish|MD5|IDEA|RSA|DSA|MD4|SH
 do_grep '\W(CryptAcquireContext|CryptDeriveKey|CryptGenKey|CryptGenRandom)\W.{0,99}$' 'info_crypto_api_call.txt'
 
 # Windows API Areas
+echo 
+info "Starting Windows API analysis"
 do_grep 'CreateEvent.{0,99}$' 'info_createEvent.txt'
 do_grep 'dllimport.{0,99}$' 'info_dllimport.txt'
 do_grep '(HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKEY_CLASSES_ROOT|HKEY_USERS|HKEY_CURRENT_CONFIG).{0,99}$' 'info_winreg_key.txt'
 do_grep '(OpenSubKey|RegOpenKey|RegQueryInfoKey|RegQueryValue|RegSetValue).{0,99}$' 'info_winreg_api.txt'
-do_grep 'string\.Format\(.*{.{0,99}$' 'info_dotnet_interpolation.txt'
-do_grep 'string\.Format.{0,99}$' 'info_dotnet_string_format.txt'
-do_grep 'System\.IO\.Pipes.{0,99}$' 'info_dotnet_pipes.txt'
-do_grep 'System\.Net.{0,99}$' 'info_dotnet_net.txt'
+do_filelist_grep 'string\.Format\(.*{.{0,99}$' 'info_dotnet_interpolation.txt' "$CS_FILELIST"
+do_filelist_grep 'string\.Format.{0,99}$' 'info_dotnet_string_format.txt' "$CS_FILELIST"
+do_filelist_grep 'System\.IO\.Pipes.{0,99}$' 'info_dotnet_pipes.txt' "$CS_FILELIST"
+do_filelist_grep 'System\.Net.{0,99}$' 'info_dotnet_net.txt' "$CS_FILELIST"
 
-# Versions
+#region Versions
+echo 
+info "Starting product versioning analysis"
 do_grep 'AWS_JSONCPP_VERSION_STRING.{0,99}$' 'info_ver_jsoncpp.txt'
 do_grep 'AWS_SDK_VERSION_STRING.{0,99}$' 'info_ver_aws_sdk.txt'
 do_grep 'BZ_VERSION.{0,99}$' 'info_ver_bzip.txt'
@@ -744,17 +949,22 @@ do_grep '(PG_MAJORVERSION|PG_VERSION|PG_VERSION_STR).{0,99}$' 'info_ver_postgres
 do_grep 'SQLITE_VERSION.{0,99}$' 'info_ver_sqlite.txt'
 do_grep 'U_ICU_VERSION.{0,99}$' 'info_ver_u_icu.txt'
 do_grep 'ZLIB_VERSION.{0,99}$' 'info_ver_zlib.txt'
+#endregion
 
-
-# Dangerous HTTP patterns
+#region Dangerous HTTP patterns
+echo 
+info "Starting dangerous HTTP routing analysis"
 do_grep 'HTTP_USER_AGENT.{0,99}$' 'info_http_user_agent.txt'
 do_grep 'HTTP_X_FORWARDED_FOR.{0,99}$' 'info_http_x_forwarded_for.txt'
+#endregion
 
-# Interesting comments
-do_grep '\W(TODO|HACK|FIXME|XXX|BROKEN)\W.{0,99}$' 'info_comment_todos.txt' '-io'
+#region Interesting comments
+echo 
+info "Starting interesting comments analysis"
+do_grep '\W(TODO|HACK|FIXME|XXX|BROKEN|BUG)\W.{0,99}$' 'info_comment_todos.txt' '-io'
 # Please note we are looking for offensive terms here; please don't be offended by our attempt to find offensive words...!
 do_grep '\W(as\x73hole|ba\x73tard|brain\x66uck|co\x63k|cr\x61p|cr\x61ppy|cu\x6et|di\x63k|flippin|flipping|fu\x63k|fu\x63king|mother\x66ucker|s\x63rewed|s\x68it|pu\x73sy|t\x69ts)\W.{0,99}$' 'info_comment_obscenities.txt' '-io'
-do_grep 'NOLINT|noinspection|safesql|coverity|fortify|veracode|DevSkim|checkmarx|\Wnosec\W.{0,99}$' 'info_comment_static_analysis_tool.txt'
+do_grep 'NOLINT|noinspection|safesql|coverity|fortify|veracode|DevSkim|checkmarx|sonarqube|\Wnosec\W.{0,99}$' 'info_comment_static_analysis_tool.txt'
 do_grep 'rubocop:disable.{0,99}$' 'info_comment_rubocop_disable.txt'
 do_grep 'rubocop:disable\s+Security.{0,99}$' 'bug_comment_rubocop_disable_security.txt'
 do_grep 'inflate.*[0123456789.]{3,}.*Copyright.*Mark.*Adler.{0,99}$' 'info_comment_inflate_version.txt'
@@ -762,8 +972,11 @@ do_grep 'credit.card.{0,99}$' 'info_comment_credit_card.txt'
 do_grep '\Wcvv\W.{0,99}$' 'info_comment_cvv.txt'
 do_grep '\Wlucky*\W' 'info_comment_luck.txt'
 do_grep 'security (concern|problem|vulnerability|issue).{0,199}$' 'info_comment_security_concern.txt'
+#endregion
 
-# Interesting constants / unique tokens
+#region Interesting constants / unique tokens
+echo 
+info "Starting interesting constants / unique tokens analysis"
 do_grep_return_uniq_token '^\s*require\s+"[^"]+"\s*$' 'info_uniq_sorted_ruby_requires.txt'
 do_grep_return_uniq_token 'DynamoDBTable' 'info_uniq_sorted_dynamo_db_tables.txt'
 do_grep_return_uniq_token '(^|[^A-Z0-9])(AKIA|ASIA)[A-Z0-9]{16}($|[^A-Z0-9])' 'info_uniq_sorted_amazon_access_ids.txt'
@@ -780,15 +993,11 @@ do_grep_return_uniq_token '[a-zA-Z0-9_\.]{0,99}(/[a-zA-Z0-9_\.]{1,99}){1,99}/?' 
 do_grep_return_uniq_token '\S{10,199}\.amazonaws\.com' 'info_uniq_sorted_aws_hosts.txt'
 do_grep_return_uniq_token '^.{0,8}copyright.{0,199}$' 'info_uniq_sorted_copyright_notices.txt'
 
-
 do_grep '[a-f0-9-]{16,}.{0,99}$' 'info_const_hex.txt' '' "grep -Pvi '([0-9a-f-])\1{4,}'"
 do_grep '[a-f0-9]{16,}.{0,99}$' 'info_const_hex2.txt' '' "grep -Pvi '([0-9a-f])\1{4,}'"
+#endregion
 
-echo "Custom greps finished"
-
-echo "Starting banned function greps - this may take a while"
-do_fast_banned_grep
-
+#region Creds in code
 # Do cred checks last
 do_grep '<bcrypt-hash>.{0,199}$' 'bug_bcrypt_hash.txt'
 
@@ -804,8 +1013,6 @@ do_grep '^.{0,99}#define.{0,99}PASSWORD.{0,99}".{0,99}$' 'bug_define_password.tx
 do_grep '\w+://\w+:\w+@\w+.{0,99}$' 'bug_creds_in_url.txt'
 do_grep '^.{0,200}curl[^\n]{0,200}-u[^\n]{0,200}:[^\n]{0,200}$' 'cred_curl_auth.txt'
 
-
-# Creds in code
 do_grep '^.{0,199}"[a-f0-9]{16,}".{0,199}$' 'info-creds-hex-dblquotes.txt'
 do_grep '^[^=\n]{0,199}TOKEN[^=\n]{0,30}=\s*[^\n\s]{7,199}\s*$' 'info-cred-token-equals.txt'
 do_grep '^[^=\n]{0,199}KEY[^=\n]{0,30}=\s*[^\n\s]{7,199}\s*$' 'info-cred-key-equals.txt'
@@ -848,8 +1055,9 @@ do_grep '(?i)telegram[^=]*=[^=]*[0-9]{1,12}+:[0-9a-zA-Z-]{32,44}.{0,99}$' 'bug_c
 do_grep 'xox[baprs]-[^=]*=[^=]*.{0,99}$' 'bug_cred_slack.txt'
 do_grep '(?i)(sk|pk)_(test|live)_[0-9a-zA-Z]{10,32}.{0,99}$' 'bug_cred_strip_token.txt'
 do_grep 'signtool.*/p.{0,99}$' 'bug_cred_signtool_password.txt'
+#endregion
 
-# Common hash formats
+#region Common hash formats
 do_grep '0x01[0-9a-zA-Z]{50}\W.{0,99}$' 'hash_MSSQL-2005.txt'
 do_grep '0x01[0-9a-zA-Z]{90}\W.{0,99}$' 'hash_MSSQL-2000.txt'
 do_grep '0x02[0-9a-zA-Z]{138}\W.{0,99}$' 'hash_MSSQL-2012-2014.txt'
@@ -934,6 +1142,15 @@ do_grep '\{ssha256\}06\$.{0,199}$' 'bug_cred_hash_30.txt'
 do_grep '\{SSHA512\}.{0,199}$' 'bug_cred_hash_31.txt'
 do_grep '\{ssha512\}06\$.{0,199}$' 'bug_cred_hash_32.txt'
 do_grep '\{x-issha,\s*1024\}.{0,199}$' 'bug_cred_hash_33.txt'
+#endregion
+
+echo 
+info "Custom greps finished"
+
+echo 
+info "Starting banned function greps - this may take a while"
+do_fast_banned_grep
+
 
 
 # Rule( 'jdbc', 'password', 'jdbc:(\w+:)+//.{,80}(password|pwd)\s*=(?P<pwd>\S+)', [] ),
@@ -956,11 +1173,26 @@ do_grep '\{x-issha,\s*1024\}.{0,199}$' 'bug_cred_hash_33.txt'
 # Rule( 'US Passport Number', 'passport', '(?P<pwd>' + "[23][0-9]{8}" + ')', [] ),
 
 
+# Remove filelists, as not relevant to assessments
+rm_if_present $APPLE_FILELIST
+rm_if_present $C_FILELIST
+rm_if_present $CS_FILELIST
+rm_if_present $GO_FILELIST
+rm_if_present $JAVA_FILELIST
+rm_if_present $PHP_FILELIST
+rm_if_present $RUBY_FILELIST
+rm_if_present $PYTHON_FILELIST
 
 do_exec 'echo `date`' 'basic_finished.txt'
 
 finish_time=$(date +%s)
 time_taken=$((finish_time - start_time))
 do_exec "echo $time_taken" 'basic_time_taken.txt'
+
+info "=====> DONE!"
+
+if [ $jobs ]; then
+  warn "Tasks may still be running."
+fi
 
 exit 1
