@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 # grep_all.sh - A shell script that runs grep and finds security-relevant things
 #--------------------------------------------------------------------------------
 # Author: Chris Anley
@@ -100,17 +101,29 @@
 
 #region Debugging/Output
 
+DEBUG=
+VERBOSE=
 
 YELLOW="\e[33m"  # Warnings
 BLUE="\e[94m"    # Verbose
+BOLD="\e[1m"    # Bold text
 ENDCOLOR="\e[0m" # Reset
 
 
 function verbose() {
   # Used to enhance information to the user
-  if [[ -n $VERBOSE ]]; then
+  if [ -n "$VERBOSE" ]; then
     echo -en "$BLUE"
-    echo -n "[*] $1" 
+    echo -n "[*]" "$@"
+    echo -e "$ENDCOLOR"
+  fi
+}
+
+function debug() {
+  # Used to enhance information to the user
+  if [ -n "$DEBUG" ]; then
+    echo -en "${BLUE}"
+    echo -n "[DEBUG]" "$@"
     echo -e "$ENDCOLOR"
   fi
 }
@@ -118,14 +131,14 @@ function verbose() {
 function warn() {
   # Used to warning the user about an action that errored/failed
   echo -en "${YELLOW}"
-  echo -n "[!] $1"  
+  echo -n "[!]" "$@"
   echo -e "${ENDCOLOR}"
 }
 
 function info() {
   # Generic messages to the user
-  echo -en "\e[1m"
-  echo -n "[+] $1"
+  echo -en "${BOLD}"
+  echo -n "[+]" "$@"
   echo -e "${ENDCOLOR}"
 }
 
@@ -162,57 +175,62 @@ function show_help() {
   
 }
 
-if [ "$1" == "-v" ] || [ "$1" == "--verbose" ] ; then
-  VERBOSE=1
-  shift
-fi
 
-if [ "$1" == "-d" ] || [ "$1" == "--debug" ] ; then
-  DEBUG=1
-  shift
-fi
-
-#region Parse CLI arguments
-# determine whether to use ripgrep
-do_ripgrep="false"
-if [ "$1" == "-r" ] || [ "$1" == "--ripgrep" ] ; then
-  if [ -z "$(which rg)" ] ; then
-    warn "Ripgrep requested but not found. Rerun without '-r'/'--ripgrep' or install ripgrep then run again."
-    exit
-  else
-    verbose "Ripgrep mode selected"
-    do_ripgrep="true"
-    shift
-  fi
-fi
-
-if [ -z "$1" ] || [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
-  verbose "Help parameter detected"
+if [ -z "$1" ]; then
   show_help
   exit
 fi
 
+do_ripgrep="false"
+
+for arg in in "$@"
+do
+  case "$arg" in
+    "-h" | "--help") 
+      show_help; 
+      exit ;;
+    "-r" | "--ripgrep")     
+      if [ -z "$(which rg)" ] ; then
+        warn "Ripgrep requested but not found. Rerun without '-r'/'--ripgrep' or install ripgrep then run again."
+        exit
+      fi
+      do_ripgrep="true" ;;
+    "-v" | "--verbose") 
+      VERBOSE=1 ;;
+    "-d" | "--debug") 
+      DEBUG=1 ;;
+  esac
+done
+
+# Shift parameters so output/code paths are correct
+[ -n "$VERBOSE" ] && shift && verbose "Verbose parameter detected"
+[ -n "$DEBUG" ] && shift  && debug "Debug parameter detected"
+[ "$do_ripgrep" == "true" ] && shift && info "Ripgrep mode selected"
+
+
 # Track relative and absolute paths, as we will be CDing into the code directory.
 out_original=$1
-out=$(realpath $out_original)
+out=$(realpath "$out_original")
+code_directory=""
 current_dir=$(pwd)
 scriptDir=$(dirname "$0")
 
 # Switch to code dir if provided
 if  [ -n "$2" ] ; then 
-  if [ ! -d "$2" ] ; then
+  cd "$2" || { 
     warn "Directory '$2' does not exist."
     show_help
     exit
-  fi
-  cd $2
+  }
+  
+  code_directory=$2
   current_dir=$(pwd)
 fi
 #endregion
 
-verbose "\$out => $out"
-verbose "\$current_dir => $current_dir"
-verbose "\$scriptDir => $scriptDir"
+debug "\$out => $out"
+debug "\$current_dir => $current_dir"
+debug "\$scriptDir => $scriptDir"
 
 info "Writing to output directory: $out"
 if [ ! -e "$out" ]; then
@@ -223,7 +241,7 @@ info "Reading from: $current_dir"
 
 #region Escaping greps: the following chars need escaping: (){}?+ and space
 # Define format first, putting word boundaries on the actual lookups
-domainNameFormat='(([A-Z0-9][A-Z0-9-]{1,80}\.){1,}(aero|arpa|asia|biz|cat|com|coop|edu|gov|inet|jobs|mil|mobi|museum|org|ru|pro|tel|travel|u[ks]|xxx|)'
+domainNameFormat='(([A-Z0-9][A-Z0-9-]{1,80}\.){1,}(aero|arpa|asia|biz|cat|com|coop|edu|gov|inet|jobs|mil|mobi|museum|org|ru|pro|tel|travel|u[ks]|xxx)'
 
 # Word boundaries will speed up matches signficantly.
 domainName="\b${domainNameFormat}\b"
@@ -237,16 +255,16 @@ LANG=C
 
 #region Library functions - e.g. do_xxxx, rm_if_xxxxx
 function rm_if_empty() {
-  test -s "${1}" || rm "${1}"
+  test -s "${1}" || rm "${1}" && debug "rm_if_empty: File deleted: $1"
 }
 function rm_if_present() {
-  test -e "${1}" && rm "${1}"
+  test -e "${1}" && rm "${1}" && debug "rm_if_present: File deleted: $1"
 }
 
 function grep_filter() {
   #cat
   #grep -vi '\.xml' | grep -vi '\.js' | grep -vi '\.css' |
-  grep -Pvi --binary-files=text '(binary file|/third_party/|/test/|example|/node_modules/|/packages/|/obj/|/bin/|/vendor/|/\.svn/)'
+  grep -Pviq --binary-files=text '(binary file|/third_party/|/test/|example|/node_modules/|/packages/|/obj/|/bin/|/vendor/|/\.svn/)'
 }
 
 # do_grep <expression> <output-file> <grep-options> <filter-cmd>
@@ -259,12 +277,19 @@ function do_plaingrep() {
     grep_opts="-Prn $3"
   fi
 
-  if [ -z "$4" ]; then
-    echo "grep $grep_opts $1 $(pwd) | grep_filter > $out_original/$2"
-    grep $grep_opts "$1" "$(pwd)" | grep_filter >"$out/$2"
-  else
-    echo "grep $grep_opts $1 $(pwd) | grep_filter | $4 > $out_original/$2"
-    grep $grep_opts "$1" "$(pwd)" | grep_filter | sh -c "$4" > "$out/$2"
+  debug "do_plaingrep: "
+  debug "  \$1 => $1"
+  debug "  \$2 => $2"
+  debug "  \$3 => $3"
+  debug "  \$4 => $4"
+
+  # If extra commands are required
+  if [ -n "$4" ]; then
+    echo "grep \"$grep_opts\" \"$1\" \"$code_directory\" | grep_filter | sh -c \"$4\" > \"$out_original/$2\""
+    grep "$grep_opts" "$1" "$(pwd)" | grep_filter | sh -c "$4" > "$out/$2"
+  else 
+    echo "grep \"$grep_opts\" \"$1\" \"$code_directory\" | grep_filter > \"$out_original/$2\""
+    grep "$grep_opts" "$1" "$(pwd)" | grep_filter >"$out/$2"  
   fi
 
   rm_if_empty "$out/$2"
@@ -274,6 +299,12 @@ function do_plaingrep() {
 function do_filelist_grep() {
   # do_filelist_grep <expression> <output-file> <input-filelist> <grep-opts>
 
+  debug "do_filelist_grep: "
+  debug "  \$1 => $1"
+  debug "  \$2 => $2"
+  debug "  \$3 => $3"
+  debug "  \$4 => $4"
+  
   grep_opts="-Prn"
   
   if [ -n "$4" ]; then
@@ -282,22 +313,21 @@ function do_filelist_grep() {
 
   # Skip checks if a file doesn't exist
   if [ ! -s "$out/$3" ]; then   
-    verbose "do_filelist_grep: Skipping $3 : No files "
+    verbose "do_filelist_grep: Skipped (no files): <$3 xargs grep ${grep_opts} '$1' >> $2"
     return
   fi
 
-  echo "cat $out_original/$3 | xargs grep ${grep_opts} '$1' >> $2"
+  echo "<$3 xargs grep ${grep_opts} '$1' >> $2"
   
   if [ ! -s "$out/$2" ]; then
-    cat "$out/$3" | xargs -d '\n' grep $grep_opts "$1" > $out/$2 
+    < "$out/$3" xargs -d '\n' grep "$grep_opts" "$1" > "$out/$2"
 
-    # DEBUG : File may not be generated from output, so cater output for non-existent files
-    if [ -n $VERBOSE ]; then
+    # Check verbose flag directly, as this has an overhead
+    if [ -n "$VERBOSE" ]; then
       if [ -s "$out/$2" ]; then 
-          verbose "do_filelist_grep: $2 >> $(cat $out_original/$2 | wc -l) result(s)"
-      else 
-          verbose "do_filelist_grep: $2 >> 0 result(s)"
+          verbose "do_filelist_grep: $2 >>" "$(wc -l < "$out_original/$2")" "result(s)"
       fi
+    fi
   fi
 
   rm_if_empty "$out/$2"
@@ -308,27 +338,24 @@ function do_ripgrep() {
 
   rg_args=(--no-heading -Pn) # ripgrep is more sensitive to how arguments are passed - array required
   if [ -n "$3" ]; then # convert grep style includes to ripgrep
-    grep_args="$(sed 's|--include=\(\S*\)|-g \1|g' <<<$3)"
-    grep_args="$(sed 's|--exclude=\(\S*\)|-g !\1|g' <<<$grep_args)"
+    grep_args="$(sed 's|--include=\(\S*\)|-g \1|g' <<<"$3")"
+    grep_args="$(sed 's|--exclude=\(\S*\)|-g !\1|g' <<<"$grep_args")"
     IFS=' ' read -ra args_array <<<"${grep_args}"
     rg_args+=("${args_array[@]}")
   fi
   rg_args+=("$1" "$(pwd)")
 
   if [ -z "$4" ]; then
-    echo "rg ${rg_args[@]} | grep_filter > $out_original/$2"
+    # shellcheck disable=SC2059,SC2068
+    echo "rg " ${rg_args[@]} "| grep_filter > $out_original/$2"
     rg "${rg_args[@]}" | grep_filter >"$out/$2"
   else
-    echo "rg ${rg_args[@]} | grep_filter | sh -c $4 > $out_original/$2"
+    # shellcheck disable=SC2059,SC2068
+    echo "rg " ${rg_args[@]} "| grep_filter | sh -c $4 > $out_original/$2"
     rg "${rg_args[@]}" | grep_filter | sh -c "$4" >"$out/$2"
   fi
 
   rm_if_empty "$out/$2"
-}
-
-function do_banned_grep() {
-  do_grep_args=("$1"'\s*\(.{0,99}$' "banned_$1.txt" "-i $C_FILES")
-  do_grep "${do_grep_args[@]}"
 }
 
 function do_plaingrep_return_uniq_token() {
@@ -356,6 +383,10 @@ else
 fi
 
 function do_exec() {
+  debug "do_exec: "
+  debug "  \$1 => $1"
+  debug "  \$2 => $2"
+
   if [ ! -e "$out/$2" ]; then
     echo "$1"
     eval "$1" &>"$out/$2"
@@ -372,24 +403,40 @@ function do_fast_banned_grep() {
   combinedfile="${out}/banned_combined_results.txt"
 
   info "grep for all banned functions to combined results"
-  pattern='[\W^]('"$(join_array '|' ${BannedFunctions[@]})"')\s*\(.{0,99}$'
-  if [ "$do_ripgrep" == "true" ]; then
-    grep_args="$(sed 's|--include=\(\S*\)|-g \1|g' <<<$C_FILES)"
-    grep_args="$(sed 's|--exclude=\(\S*\)|-g !\1|g' <<<$grep_args)"
+
+  # shellcheck disable=SC2068
+  pattern="[\W^]($(join_array '|' ${BannedFunctions[@]}))\s*\(.{0,99}$"
+  if [ "${do_ripgrep}" == "true" ]; then
+    grep_args="$(sed 's|--include=\(\S*\)|-g \1|g' <<<"$C_FILES")"
+    grep_args="$(sed 's|--exclude=\(\S*\)|-g !\1|g' <<< "$grep_args")"
+
     IFS=' ' read -ra args_array <<<"${grep_args}"
-    grep_args=(-Pn --no-heading "${args_array[@]}" "${pattern}" "$(pwd)")
-    verbose "rg ${grep_args[@]} | grep_filter > ${combinedfile}"
-    rg "${grep_args[@]}" | grep_filter > "${combinedfile}"
+
+    #shellcheck disable=SC2206,SC2207
+    grep_args=(-Pn --no-heading "${args_array[@]}" \"${pattern}\" \"$(pwd)\")
+
+    # shellcheck disable=SC2059,SC2145
+    verbose "rg ${grep_args[@]} | grep_filter > \"${combinedfile}\""
+
+    # shellcheck disable=SC2068
+    rg ${grep_args[@]} | grep_filter > "${combinedfile}"
   else
     IFS=' ' read -ra args_array <<<"${C_FILES}"
-    grep_args=(-Prn "${args_array[@]}" "${pattern}" "$(pwd)")
-    verbose "${grep_args[@]}" | grep_filter > ${combinedfile}"
-    grep "${grep_args[@]}" | grep_filter > ${combinedfile}"
+
+    #shellcheck disable=SC2206,SC2207
+    grep_args=(-Prn "${args_array[@]}" \"${pattern}\" \"$(pwd)\")
+
+    # shellcheck disable=SC2059,SC2145,SC2068
+    verbose "grep ${grep_args[@]} | grep_filter > \"${combinedfile}\""
+
+    # shellcheck disable=SC2068
+    grep ${grep_args[@]} | grep_filter > "${combinedfile}"
   fi
 
   info "splitting grep results"
   for fn in "${BannedFunctions[@]}"; do
-    grep "-P" '[\W^]'"${fn}"'\s*\(.{0,99}$' "${combinedfile}" >"${out}/banned_${fn}.txt"
+    debug "do_fast_banned_grep: grep \"-P\" \"[\W^]${fn}\s*\(.{0,99}$\" \"${combinedfile}\" > \"${out}/banned_${fn}.txt\""
+    grep "-P" "[\W^]${fn}\s*\(.{0,99}$'" "${combinedfile}" > "${out}/banned_${fn}.txt"
     rm_if_empty "${out}/banned_${fn}.txt"
   done
   rm "${combinedfile}"
@@ -414,7 +461,7 @@ if true; then
   do_exec "find . -name 'requirements.txt' -exec sh -c 'echo {}; safety check --full-report -r {}' \;" 'tool_safety.txt'
 
   #echo '# Count of files by extension'
-  do_exec "find ./ -type f | grep -E '.*\.[a-zA-Z0-9]*$' | sed -e 's/.*\(\.[a-zA-Z0-9]*\)$/\1/' | sort | uniq -c | sort -n" 'basic_extensions.txt'
+  do_exec "find . -type f | grep -E '.*\.[a-zA-Z0-9]*$' | sed -e 's/.*\(\.[a-zA-Z0-9]*\)$/\1/' | sort | uniq -c | sort -n" 'basic_extensions.txt'
   #
   #echo '# CLOC - Count Lines Of Code'
   do_exec 'cloc --progress-rate=0 .' 'basic_cloc.txt' & # background cloc because it can take a very long time + its a bit tedious
@@ -434,10 +481,10 @@ if true; then
   do_exec 'find . -type f -name *.sh -exec shellcheck {} \;' 'tool_shellcheck.txt' &
   #
   # Find git repositories
-  do_exec 'find `pwd` -name .git' 'info_git_repositories.txt' &
+  do_exec 'find . -name .git' 'info_git_repositories.txt' &
   #
   # Find dot files
-  do_exec 'find `pwd` -name ".*"' 'info_dot_files.txt' &
+  do_exec 'find . -name ".*"' 'info_dot_files.txt' &
   #
   # cppcheck - c / cpp static analysis
   #do_exec 'find . "( -name *.c -o -name *.cpp -o -name *.cxx -o -name *.cc )" -exec cppcheck --force \{\} \;' 'tool_cppcheck.txt' &  # Background, because long-running
@@ -449,16 +496,16 @@ if true; then
   do_exec 'bandit --ignore-nosec -r .' 'tool_bandit.txt' & # Background, long running
   #
   # Find 'secret' files
-  do_exec 'find `pwd` -name '\''*secret*'\' 'bug_secret_files.txt'
+  do_exec 'find . -name '\''*secret*'\' 'bug_secret_files.txt'
 
   # Find 'pickle' files
-  do_exec 'find `pwd` -name '\''*.pkl'\' 'bug_pickle_files.txt'
+  do_exec 'find . -name '\''*.pkl'\' 'bug_pickle_files.txt'
 
   # Find model files
-  do_exec 'find `pwd` -name '\''*.hdf5'\' 'bug_ml_model_files_hdf5.txt'
-  do_exec 'find `pwd` -name '\''*.hd5'\' 'bug_ml_model_files_hd5.txt'
-  do_exec 'find `pwd` -name '\''*.h5'\' 'bug_ml_model_files_h5.txt'
-  do_exec 'find `pwd` -name '\''*.pt'\' 'bug_ml_model_files_pt.txt'
+  do_exec 'find . -name '\''*.hdf5'\' 'bug_ml_model_files_hdf5.txt'
+  do_exec 'find . -name '\''*.hd5'\' 'bug_ml_model_files_hd5.txt'
+  do_exec 'find . -name '\''*.h5'\' 'bug_ml_model_files_h5.txt'
+  do_exec 'find . -name '\''*.pt'\' 'bug_ml_model_files_pt.txt'
 
   # NSP - Node security project. Looks for package.json in project directories. Summary because it's one line per bug.
   # npm install -g nsp
@@ -470,6 +517,8 @@ if true; then
 
   # Brakeman
   for d in $(find . | grep config/routes.rb | sed -E 's/config\/routes\.rb//'); do
+
+    #shellcheck disable=SC2059
     filename=$(printf "$d" | tr -C '[:alnum:]' '_')
     brakeman --absolute-paths -o "$out/tool_brakeman_$filename.txt" -o "$out/tool_brakeman_$filename.html"
   done
@@ -486,7 +535,6 @@ if true; then
 # do_exec 'retire --path .' 'tool_node_retire.txt'
 
 fi
-
 
 #region File List Grepping initialization
 
@@ -516,28 +564,26 @@ RUBY_FILELIST='info_ruby_filelist.txt'
 #endregion
 
 ## Specific includes for normal grepping
-APPLE_FILES='--include=*.swift --include=*.m --include=*.plist --include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
+#APPLE_FILES='--include=*.swift --include=*.m --include=*.plist --include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
 C_FILES='--include=*.c --include=*.h --include=*.cpp --include=*.cxx --include=*.cc --include=*.C --include=*.hpp'
 CS_FILES='--include=*.cs'
-GO_FILES='--include=*.go'
-PHP_FILES='--include=*.php --include=*.php3 --include=*.php4 --include=*.php5 --include=*.phtml --include=*.inc'
-JAVA_FILES='--include=*.java'
-PYTHON_FILES='--include=*.py'
-RUBY_FILES='--include=*.rb'
+#GO_FILES='--include=*.go'
+#PHP_FILES='--include=*.php --include=*.php3 --include=*.php4 --include=*.php5 --include=*.phtml --include=*.inc'
+#JAVA_FILES='--include=*.java'
+#PYTHON_FILES='--include=*.py'
+#RUBY_FILES='--include=*.rb'
 
 BannedFunctions=('_alloca' '_ftcscat' '_ftcscpy' '_getts' '_gettws' '_i64toa' '_i64tow' '_itoa' '_itow' '_makepath' '_mbccat' '_mbccpy' '_mbscat' '_mbscpy' '_mbslen' '_mbsnbcat' '_mbsnbcpy' '_mbsncat' '_mbsncpy' '_mbstok' '_mbstrlen' '_sntscanf' '_splitpath' '_stprintf' '_stscanf' '_tccat' '_tccpy' '_tcscat' '_tcscpy' '_tcsncat' '_tcsncpy' '_tcstok' '_tmakepath' '_tscanf' '_tsplitpath' '_ui64toa' '_ui64tot' '_ui64tow' '_ultoa' '_ultot' '_ultow' '_vstprintf' '_wmakepath' '_wsplitpath' 'alloca' 'ChangeWindowMessageFilter' 'CharToOem' 'CharToOemA' 'CharToOemBuffA' 'CharToOemBuffW' 'CharToOemW' 'CopyMemory' 'gets' 'IsBadCodePtr' 'IsBadHugeReadPtr' 'IsBadHugeWritePtr' 'IsBadReadPtr' 'IsBadStringPtr' 'IsBadWritePtr' 'lstrcat' 'lstrcatA' 'lstrcatn' 'lstrcatnA' 'lstrcatnW' 'lstrcatW' 'lstrcpy' 'lstrcpyA' 'lstrcpyn' 'lstrcpynA' 'lstrcpynW' 'lstrcpyW' 'lstrlen' 'lstrncat' 'makepath' 'memcpy' 'memcpy' 'OemToChar' 'OemToCharA' 'OemToCharW' 'RtlCopyMemory' 'scanf' 'snscanf' 'snwscanf' 'sprintf' 'sprintfA' 'sscanf' 'strcat' 'strcat' 'StrCat' 'strcatA' 'StrCatA' 'StrCatBuff' 'StrCatBuffA' 'StrCatBuffW' 'StrCatChainW' 'StrCatN' 'StrCatNA' 'StrCatNW' 'strcatW' 'StrCatW' 'strcpy' 'StrCpy' 'strcpyA' 'StrCpyA' 'StrCpyN' 'StrCpyNA' 'strcpynA' 'StrCpyNW' 'strcpyW' 'StrCpyW' 'strlen' 'StrLen' 'strncat' 'StrNCat' 'StrNCatA' 'StrNCatW' 'strncpy' 'StrNCpy' 'StrNCpyA' 'StrNCpyW' 'strtok' 'swprintf' 'swscanf' 'vsnprintf' 'vsprintf' 'vswprintf' 'wcscat' 'wcscpy' 'wcslen' 'wcsncat' 'wcsncpy' 'wcstok' 'wmemcpy' 'wnsprintf' 'wnsprintfA' 'wnsprintfW' 'wscanf' 'wsprintf' 'wsprintf' 'wsprintfA' 'wvnsprintf' 'wvnsprintfA' 'wvnsprintfW' 'wvsprintf' 'wvsprintfA' 'wvsprintfW')
 
-
-
 # Filter relevant files 
-do_exec "find `pwd` -iregex $APPLE_FILELIST_FILTER" "$APPLE_FILELIST"
-do_exec "find `pwd` -iregex $C_FILELIST_FILTER" "$C_FILELIST"
-do_exec "find `pwd` -iregex ${CS_FILELIST_FILTER}" "$CS_FILELIST"
-do_exec "find `pwd` -iregex $GO_FILELIST_FILTER" "$GO_FILELIST" 
-do_exec "find `pwd` -iregex $JAVA_FILELIST_FILTER" "$JAVA_FILELIST"
-do_exec "find `pwd` -iregex $PHP_FILELIST_FILTER" "$PHP_FILELIST" 
-do_exec "find `pwd` -iregex $PYTHON_FILELIST_FILTER" "$PYTHON_FILELIST" 
-do_exec "find `pwd` -iregex $RUBY_FILELIST_FILTER" "$RUBY_FILELIST" 
+do_exec "find . -iregex $APPLE_FILELIST_FILTER" "$APPLE_FILELIST"
+do_exec "find . -iregex $C_FILELIST_FILTER" "$C_FILELIST"
+do_exec "find . -iregex ${CS_FILELIST_FILTER}" "$CS_FILELIST"
+do_exec "find . -iregex $GO_FILELIST_FILTER" "$GO_FILELIST" 
+do_exec "find . -iregex $JAVA_FILELIST_FILTER" "$JAVA_FILELIST"
+do_exec "find . -iregex $PHP_FILELIST_FILTER" "$PHP_FILELIST" 
+do_exec "find . -iregex $PYTHON_FILELIST_FILTER" "$PYTHON_FILELIST" 
+do_exec "find . -iregex $RUBY_FILELIST_FILTER" "$RUBY_FILELIST" 
 
 ## Below statements are all run in parallel, as grepping will be extremely fast.
 
@@ -694,9 +740,9 @@ info "Starting general analysis ..."
 do_filelist_grep '# <?= $token ?>.{0,200}$' 'bug_php_xss_interp.txt' "$PHP_FILELIST"
 do_filelist_grep '<\w+>.*\$\w+.{0,200}$' 'bug_php_xss_tag.txt' "$PHP_FILELIST"
 do_grep '\s+WHERE\s+[^\n]*\$\w+.{0,99}$' 'bug_sqli_where.txt'
-do_grep '^[^\n]{0,99}\$\w+[^\n]{0,99}\s+(AND|OR)\s+[^\n]{0,99}\sIN\s*\([^\n]{0,99}\.[^\n]{0,99}\$\w+[^\n]{0,99}\)[^\n]{0,99}$' 'bug_php_sqli_in.txt'
+do_grep '^[^\n]{0,99}\$\w+[^\n]{0,99}\s+(AND|OR)\s+[^\n]{0,99}\sIN\s*\([^\n]{0,99}\.[^\n]{0,99}\$\w+[^\n]{0,99}\)[^\n]{0,99}$' "" 'bug_php_sqli_in.txt'
 
-do_grep 'http(s)?://\d+\.\d+\.\d+\.\d+.{0,200}$' 'bug_url_numeric.txt' " | grep -v '127.0.0.1'"
+do_grep 'http(s)?://\d+\.\d+\.\d+\.\d+.{0,200}$' 'bug_url_numeric.txt' "" "grep -v '127.0.0.1'"
 do_grep '\WCVE-\d\d\d\d-.{0,200}$' 'info_cve_id.txt'
 do_grep '\<in\>.{0,199}strings\.Join\(.{0,199}' 'bug_sqli_in_joined_strings.txt'
 do_grep 'strings\.Join\(.{0,199}'\''.{0,199}$' 'bug_sqli_joined_strings_sgl.txt'
@@ -1149,9 +1195,8 @@ info "Custom greps finished"
 
 echo 
 info "Starting banned function greps - this may take a while"
+
 do_fast_banned_grep
-
-
 
 # Rule( 'jdbc', 'password', 'jdbc:(\w+:)+//.{,80}(password|pwd)\s*=(?P<pwd>\S+)', [] ),
 # Rule( 'password', 'password', 'password\s*=\s*["\'](?P<pwd>\S+)["\']', [] ),
@@ -1174,14 +1219,14 @@ do_fast_banned_grep
 
 
 # Remove filelists, as not relevant to assessments
-rm_if_present $APPLE_FILELIST
-rm_if_present $C_FILELIST
-rm_if_present $CS_FILELIST
-rm_if_present $GO_FILELIST
-rm_if_present $JAVA_FILELIST
-rm_if_present $PHP_FILELIST
-rm_if_present $RUBY_FILELIST
-rm_if_present $PYTHON_FILELIST
+rm_if_present "$APPLE_FILELIST"
+rm_if_present "$C_FILELIST"
+rm_if_present "$CS_FILELIST"
+rm_if_present "$GO_FILELIST"
+rm_if_present "$JAVA_FILELIST"
+rm_if_present "$PHP_FILELIST"
+rm_if_present "$RUBY_FILELIST"
+rm_if_present "$PYTHON_FILELIST"
 
 do_exec 'echo `date`' 'basic_finished.txt'
 
@@ -1191,8 +1236,6 @@ do_exec "echo $time_taken" 'basic_time_taken.txt'
 
 info "=====> DONE!"
 
-if [ $jobs ]; then
-  warn "Tasks may still be running."
-fi
+[[ -z "$(jobs -r)" ]] || warn "Tasks may still be running."
 
 exit 1
